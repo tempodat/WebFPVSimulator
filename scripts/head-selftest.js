@@ -224,6 +224,25 @@ console.log('face lost');
     prev = o.yaw;
   });
   check('a face found again is followed, not cut to (no frame moves over 13 degrees)', jump <= 12.01 * DEG, deg(jump));
+  /* The engage switch off: home at once, with the face still seen. */
+  const turned = { valid: true, yaw: 30 * DEG, pitch: 15 * DEG, roll: 0 };
+  run(g, turned, cfg, 0.5);
+  const before = g.out.yaw;
+  stepGimbal(g, turned, cfg, 1 / 60, true);
+  check('the engage switch off starts the view home on its first frame, with no hold', g.out.yaw < before, deg(g.out.yaw));
+  let offCrossed = false;
+  for (let i = 0; i < 60; i += 1) {
+    stepGimbal(g, turned, cfg, 1 / 60, true);
+    offCrossed = offCrossed || g.out.yaw < 0 || g.out.pitch < 0;
+  }
+  check('and is home within 2 percent a second later, without overshooting', Math.abs(g.out.yaw) < 0.02 * before && !offCrossed, deg(g.out.yaw));
+  let offJump = 0;
+  let offPrev = g.out.yaw;
+  run(g, turned, cfg, 0.3, 1 / 60, (o) => {
+    offJump = Math.max(offJump, Math.abs(o.yaw - offPrev));
+    offPrev = o.yaw;
+  });
+  check('switched back on, the head is followed again, not cut to', offJump <= 12.01 * DEG && near(g.out.yaw, 60 * DEG, 1e-6), deg(offJump));
   resetGimbal(g);
   check('reset puts it straight ahead', g.out.yaw === 0 && g.out.pitch === 0 && g.out.roll === 0);
 }

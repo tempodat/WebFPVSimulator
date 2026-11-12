@@ -884,6 +884,12 @@ export async function boot({ loading, bootStart, mapId }) {
   let headLive = false;
   /* The camera the tracker has open, to reopen on a change. */
   let headCamera = null;
+  /* The radio's engage switch (input.js noteHeadEngageSwitch): whether the
+   * head turns the camera right now. Not a setting but the flight's state:
+   * the camera stays open while it is off, so engaging again is instant.
+   * True with no switch set, so Settings alone decides then. */
+  let headEngaged = true;
+  ui.headEngaged = true;
   /* The OSD's word when tracking is on and not following the head, written
    * only when it changes (no animation loop, like src/ui/scorehud.js). */
   const headMark = document.createElement('div');
@@ -908,6 +914,9 @@ export async function boot({ loading, bootStart, mapId }) {
     }
     if (st === 'denied' || st === 'unsupported' || st === 'error') {
       return 'HEAD TRACKING OFF: SEE SETTINGS';
+    }
+    if (!headEngaged) {
+      return 'HEAD OFF';
     }
     return headSample.valid ? '' : 'HEAD LOST';
   }
@@ -8463,7 +8472,7 @@ export async function boot({ loading, bootStart, mapId }) {
      */
     /* 'advanced' holds Render scale and the frame cap, both settings
      * changes that can land here (MENUS-PLAN.md 2.3). */
-    const STAY_SCREENS = ['pilot', 'advanced', 'attitude', 'quad', 'launch', 'rates', 'paused', 'title', 'credits'];
+    const STAY_SCREENS = ['pilot', 'advanced', 'attitude', 'headtrack', 'quad', 'launch', 'rates', 'paused', 'title', 'credits'];
     const stayScreen = STAY_SCREENS.includes(ui.screen) ? ui.screen : null;
     const stayMode = keepPlace ? mode : 'title';
     swapInFlight = true;
@@ -11186,6 +11195,19 @@ export async function boot({ loading, bootStart, mapId }) {
       } else {
         input.beginHeadCapture();
       }
+    } else if (action === 'headengage-switch') {
+      if (!input.firstGamepad()) {
+        notice = noRadioBanner('reload');
+      } else if (input.engageCapture) {
+        input.cancelHeadEngageCapture();
+      } else {
+        input.beginHeadEngageCapture();
+      }
+    } else if (action === 'headengage-switch-clear') {
+      input.clearHeadEngageSwitch();
+      headEngaged = true;
+      ui.headEngaged = true;
+      notice = { text: 'Engage switch forgotten.\nHead tracking follows the Settings switch alone.', untilMs: performance.now() + 2800 };
     } else if (action === 'headcentre-switch-clear') {
       input.clearHeadSwitch();
       notice = { text: 'Recenter switch forgotten.\nC on the keyboard still recenters.', untilMs: performance.now() + 2800 };
@@ -11943,6 +11965,19 @@ export async function boot({ loading, bootStart, mapId }) {
     f.tanV = Math.tan((shell.camera.fov * Math.PI) / 360);
     f.aspect = shell.camera.aspect;
     f.tilt = cameraTiltRad(camTilt);
+    /* The head gimbal's way back to the mount, written beside fpvQuat this
+     * frame, so the nose mark follows the frame and not the head. */
+    if (headLive) {
+      f.hx = qHeadInv.x;
+      f.hy = qHeadInv.y;
+      f.hz = qHeadInv.z;
+      f.hw = qHeadInv.w;
+    } else {
+      f.hx = 0;
+      f.hy = 0;
+      f.hz = 0;
+      f.hw = 1;
+    }
     /* Velocity through frame.js and the spawn's turn, as the pose is. */
     simPosToThree(stateCurr[4], stateCurr[5], stateCurr[6], ahiVel);
     ahiVel.applyQuaternion(qSpawn);
@@ -12435,6 +12470,39 @@ export async function boot({ loading, bootStart, mapId }) {
     }
     if (input.headCapture && ui.screen !== 'headtrack') {
       input.cancelHeadCapture();
+    }
+    /* The engage switch: taken every frame and acted on wherever it is
+     * flipped, as the Auto reset switch is. Off puts the view back on the
+     * nose at once (stepGimbal's off); on hands it back to the head, and
+     * when head tracking is off in Settings, turns it on, which opens the
+     * camera: the pilot asked for it with their own hand. */
+    {
+      const flipped = input.takeHeadEngageSwitch();
+      if (flipped !== null) {
+        const want = flipped === 'toggle' ? !headEngaged : Boolean(flipped);
+        const wasLive = headEngaged && ui.settings.headTrack === true;
+        headEngaged = want;
+        ui.headEngaged = want;
+        if (want && ui.settings.headTrack !== true) {
+          ui.settings.headTrack = true;
+          ui.writeSettings();
+        }
+        const live = headEngaged && ui.settings.headTrack === true;
+        if (live !== wasLive && ui.settings.headTrack === true) {
+          notice = {
+            text: live
+              ? 'HEAD TRACKING ENGAGED\nYour head turns the camera.\nThe switch hands it back to the nose.'
+              : 'HEAD TRACKING DISENGAGED\nThe camera is back on the nose.\nThe switch hands it to your head again.',
+            untilMs: performance.now() + 2600,
+          };
+        }
+        if (ui.screen === 'headtrack') {
+          ui.renderMenu();
+        }
+      }
+    }
+    if (input.engageCapture && ui.screen !== 'headtrack') {
+      input.cancelHeadEngageCapture();
     }
     /* The Auto reset switch, bug-918a8c99: see noteAutoResetSwitch in
      * input.js. Taken every frame so a flip in a menu is spent there; it
@@ -13623,7 +13691,7 @@ export async function boot({ loading, bootStart, mapId }) {
     if (headLive) {
       if (mode === 'flight') {
         headTracker.sample(performance.now(), headSample);
-        stepGimbal(headGimbal, headSample, headCfg, dt / 1000);
+        stepGimbal(headGimbal, headSample, headCfg, dt / 1000, !headEngaged);
       }
       const g = headGimbal.out;
       qPan.setFromAxisAngle(AXIS_Y, g.yaw);
@@ -14743,6 +14811,12 @@ export async function boot({ loading, bootStart, mapId }) {
       notice = headSet === 'saved'
         ? { text: `Recenter switch: ${padSum.headCentre}.\nFlip it in flight to make where you look straight ahead.`, untilMs: nowWall + 3600 }
         : { text: `Recenter switch: ${padSum.headCentre}, until you reload.\nThis browser would not keep it.`, untilMs: nowWall + 4800 };
+    }
+    const engageSet = input.takeHeadEngageResult();
+    if (engageSet && padSum.headEngage) {
+      notice = engageSet === 'saved'
+        ? { text: `Engage switch: ${padSum.headEngage}.\nA switch engages head tracking in one position and not the other; a button toggles it.`, untilMs: nowWall + 3600 }
+        : { text: `Engage switch: ${padSum.headEngage}, until you reload.\nThis browser would not keep it.`, untilMs: nowWall + 4800 };
     }
     const queuedPick = input.takePadPickQueue();
     if (queuedPick) {

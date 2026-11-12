@@ -7529,6 +7529,7 @@ export class Ui {
     this.headCameras = [];
     this.headCal = false;
     this.headStatusText = '';
+    this.headEngaged = true;
 
     /*
      * STANDINGS: the board, in the game.
@@ -21891,7 +21892,9 @@ export class Ui {
       case 'loading':
         return 'Starting the camera and the face model.';
       case 'tracking':
-        return `Tracking your head${t.delegate ? ` (${t.delegate})` : ''}.`;
+        return this.headEngaged === false
+          ? 'Tracking your head, but the engage switch is off: the camera stays on the nose until you flip it.'
+          : `Tracking your head${t.delegate ? ` (${t.delegate})` : ''}.`;
       case 'noface':
         return 'The camera is on but sees no face. Face it, with some light on you.';
       case 'denied':
@@ -22111,6 +22114,21 @@ export class Ui {
         label: 'Forget recenter switch',
         action: 'headcentre-switch-clear',
         note: 'C on the keyboard still recenters.',
+      }] : []),
+      ...(pad && pad.count > 0 && pad.using !== 'Keyboard' ? [{
+        label: 'Engage switch',
+        value: pad.headEngageCapturing ? 'Flip it now' : (pad.headEngage || 'Not set'),
+        action: 'headengage-switch',
+        note: pad.headEngageCapturing
+          ? 'Flip the switch to the position that should mean on, or press the button you want. Choose this row again to stop.'
+          : (pad.headEngage
+            ? `In flight, it hands the camera to your head or back to the nose${this.headEngaged === false ? ' (off now)' : ''}. Flipping it on while head tracking is off turns head tracking on. Choose this row to pick another.`
+            : 'A switch or button on your radio that turns head tracking on and off in flight: off puts the camera back on the nose at once, on hands it to your head again. A switch is on in the position you flip it to here; a button toggles.'),
+      }] : []),
+      ...(pad && pad.headEngage && !pad.headEngageCapturing ? [{
+        label: 'Forget engage switch',
+        action: 'headengage-switch-clear',
+        note: 'Head tracking then follows the switch at the top of this room alone.',
       }] : []),
       { label: 'Back', action: 'back' },
     ];

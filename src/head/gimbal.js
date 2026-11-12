@@ -300,13 +300,16 @@ function follow(a, target, dt, servo, tau, slew) {
 /*
  * One frame. head: {valid, yaw, pitch, roll} in radians relative to
  * neutral, already filtered and predicted. cfg: GIMBAL_DEFAULTS' shape.
- * dt: seconds since the last call. Writes g.out and returns it.
+ * dt: seconds since the last call. off: the pilot's engage switch is off,
+ * so the head is ignored and the view goes home at once, with no hold: the
+ * hold is for a face the webcam missed, and this is the pilot's own word.
+ * Writes g.out and returns it.
  */
-export function stepGimbal(g, head, cfg, dt) {
+export function stepGimbal(g, head, cfg, dt, off = false) {
   const d = dt > 0 ? Math.min(dt, 0.1) : 0;
   const servo = cfg.style === 'servo';
-  if (!head.valid) {
-    g.lost += d;
+  if (off || !head.valid) {
+    g.lost = (off ? Math.max(g.lost, HOLD_S) : g.lost) + d;
     if (g.lost > HOLD_S) {
       home(g.yaw, d);
       home(g.pitch, d);

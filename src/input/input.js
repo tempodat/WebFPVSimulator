@@ -90,6 +90,15 @@ const AUTORESET_STORE_KEY = 'webfpv.autoreset.v1';
  * the pad's id. A flip is one recenter.
  */
 const HEADCENTRE_STORE_KEY = 'webfpv.headcentre.v1';
+/*
+ * THE HEAD TRACKER'S ENGAGE SWITCH: a switch or button on the radio that
+ * says whether the pilot's head turns the camera, so the view can be put
+ * back on the nose for a gap and handed back to the head after it, hands
+ * on the sticks. Read as the Auto reset switch is: a switch (an axis) sets
+ * engaged to its position, a button toggles it. Its own key, so it and the
+ * recenter switch can be different switches on the same radio.
+ */
+const HEADENGAGE_STORE_KEY = 'webfpv.headengage.v1';
 /* An axis counts as the switch being flipped when it moves this far from
  * where it was when the row was chosen: half its travel, so a three
  * position switch moved one notch counts and a jittering gimbal does not. */
@@ -1922,6 +1931,13 @@ export class InputManager {
     this.headCapture = null;
     this.headFired = false;
     this.headResult = null;
+    /* The engage switch. See HEADENGAGE_STORE_KEY. engageEdge is what
+     * main.js takes with takeHeadEngageSwitch, as autoEdge is. */
+    this.engageSpec = loadRestartSpec(HEADENGAGE_STORE_KEY);
+    this.engagePrevOn = null;
+    this.engageCapture = null;
+    this.engageEdge = null;
+    this.engageResult = null;
     /* The dogfight's gun and missile. See GUN_STORE_KEY. weaponsLive is set
      * by main.js while a dogfight is flying; nothing is read while it is
      * not, except a pick in progress. */
@@ -2657,6 +2673,7 @@ export class InputManager {
   beginRestartCapture() {
     this.cancelAutoResetCapture();
     this.cancelHeadCapture();
+    this.cancelHeadEngageCapture();
     this.restartCapture = { id: null, buttons: null, axes: null };
     this.restartResult = null;
   }
@@ -2765,6 +2782,7 @@ export class InputManager {
   beginAutoResetCapture() {
     this.cancelRestartCapture();
     this.cancelHeadCapture();
+    this.cancelHeadEngageCapture();
     this.autoCapture = { id: null, buttons: null, axes: null };
     this.autoResult = null;
   }
@@ -2825,6 +2843,7 @@ export class InputManager {
   beginHeadCapture() {
     this.cancelRestartCapture();
     this.cancelAutoResetCapture();
+    this.cancelHeadEngageCapture();
     this.headCapture = { id: null, buttons: null, axes: null };
     this.headResult = null;
   }
@@ -2850,6 +2869,82 @@ export class InputManager {
   takeHeadResult() {
     const r = this.headResult;
     this.headResult = null;
+    return r;
+  }
+
+  /*
+   * THE HEAD TRACKER'S ENGAGE SWITCH, watched beside the recenter switch.
+   * Read as the Auto reset switch is, with one difference: engaged is not a
+   * saved setting but the state of the flight, so the first read of a
+   * switch does count when it is in its off position. A pilot who loads
+   * the page with the switch off is not handed a view that follows the
+   * head. In its on position the first read says nothing, so it never
+   * turns head tracking on by itself.
+   */
+  noteHeadEngageSwitch(gp) {
+    if (this.engageCapture) {
+      const spec = this.captureSwitch(this.engageCapture, gp);
+      if (spec) {
+        this.engageSpec = spec;
+        this.engageCapture = null;
+        this.engagePrevOn = restartOn(gp, spec);
+        /* The switch is where the pilot just left it: that is the state. */
+        this.engageEdge = spec.kind === 'button' ? null : this.engagePrevOn;
+        this.engageResult = saveRestartSpec(spec, HEADENGAGE_STORE_KEY) ? 'saved' : 'unsaved';
+      }
+      return;
+    }
+    const spec = this.engageSpec;
+    if (!spec || spec.id !== gp.id) {
+      this.engagePrevOn = null;
+      return;
+    }
+    const on = restartOn(gp, spec);
+    if (this.engagePrevOn === null) {
+      if (spec.kind !== 'button' && !on) {
+        this.engageEdge = false;
+      }
+    } else if (on !== this.engagePrevOn) {
+      if (spec.kind === 'button') {
+        if (on) {
+          this.engageEdge = 'toggle';
+        }
+      } else {
+        this.engageEdge = on;
+      }
+    }
+    this.engagePrevOn = on;
+  }
+
+  beginHeadEngageCapture() {
+    this.cancelRestartCapture();
+    this.cancelAutoResetCapture();
+    this.cancelHeadCapture();
+    this.engageCapture = { id: null, buttons: null, axes: null };
+    this.engageResult = null;
+  }
+
+  cancelHeadEngageCapture() {
+    this.engageCapture = null;
+  }
+
+  clearHeadEngageSwitch() {
+    this.engageSpec = null;
+    this.engagePrevOn = null;
+    this.engageEdge = null;
+    saveRestartSpec(null, HEADENGAGE_STORE_KEY);
+  }
+
+  /* null, true, false or 'toggle': one change, taken once. */
+  takeHeadEngageSwitch() {
+    const e = this.engageEdge;
+    this.engageEdge = null;
+    return e;
+  }
+
+  takeHeadEngageResult() {
+    const r = this.engageResult;
+    this.engageResult = null;
     return r;
   }
 
@@ -3630,6 +3725,11 @@ export class InputManager {
         ? describeRestart(this.headSpec)
         : null,
       headCentreCapturing: Boolean(this.headCapture),
+      /* headEngage    the head tracker's engage switch, the same way. */
+      headEngage: selected && this.engageSpec && this.engageSpec.id === selected.id
+        ? describeRestart(this.engageSpec)
+        : null,
+      headEngageCapturing: Boolean(this.engageCapture),
     };
   }
 
@@ -5133,6 +5233,7 @@ export class InputManager {
       this.noteRestartSwitch(gp);
       this.noteAutoResetSwitch(gp);
       this.noteHeadSwitch(gp);
+      this.noteHeadEngageSwitch(gp);
       this.noteWeapons(gp);
       if (this.stickCheck) {
         this.noteStickCheck(gp);

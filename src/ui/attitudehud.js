@@ -114,6 +114,10 @@ const FPM_MIN_SPEED = 2;
  *   vx, vy, vz  the craft's velocity, three.js world frame, m/s.
  *   roll, pitch the craft's attitude, radians: roll right positive, nose up
  *               positive (attitudeAngles).
+ *   hx..hw      the head tracking gimbal, as the rotation that takes the
+ *               camera's mount (where the lens sits with the head centred)
+ *               into the camera: main.js's qHeadInv. Identity when head
+ *               tracking is off, so nothing changes then.
  * And the pilot's choices, copied from the settings each frame:
  *   style       'camera' (true horizon) or 'craft' (Betaflight).
  *   ladder, rollScale, nose, path   each mark on or off.
@@ -127,6 +131,7 @@ export function hudFrame() {
     tanV: 1, aspect: 1, tilt: 0,
     vx: 0, vy: 0, vz: 0,
     roll: 0, pitch: 0,
+    hx: 0, hy: 0, hz: 0, hw: 1,
     style: 'camera',
     ladder: true, rollScale: true, nose: true, path: true,
     step: 10, size: 'medium', colour: 'cream', opacity: 100,
@@ -158,11 +163,15 @@ export function createAttitudeHud(parent, bend) {
   const loc = [0, 0, 0];
   let F = null;
   /* The quaternion the marks are projected through: the camera's, or in
-   * the Betaflight style the camera's with the tilt taken back out, which
-   * is the lens looking along the nose. And the tilt the waterline is
-   * drawn at, zero in that style. And this frame's ink. */
+   * the Betaflight style the mount's with the tilt taken back out, which
+   * is the lens looking along the nose. And this frame's ink. */
   const Q = { x: 0, y: 0, z: 0, w: 1 };
-  let tiltNow = 0;
+  /* The mount's world quaternion: the camera's times the gimbal's way back
+   * to its mount. The camera's own when there is no gimbal. */
+  const M = { x: 0, y: 0, z: 0, w: 1 };
+  /* Where the nose points, in the frame Q looks from: below the lens axis
+   * by the tilt, and swung by the gimbal when the head is turned. */
+  const nose = [0, 0, -1];
   let CREAM = AHI_COLOUR_HEX.cream;
 
   /* Rotate (x, y, z) by the camera quaternion's conjugate: world into the
@@ -186,6 +195,16 @@ export function createAttitudeHud(parent, bend) {
     const qy = Q.y;
     const qz = Q.z;
     const qw = Q.w;
+    const tx = 2 * (qy * z - qz * y);
+    const ty = 2 * (qz * x - qx * z);
+    const tz = 2 * (qx * y - qy * x);
+    out[0] = x + qw * tx + (qy * tz - qz * ty);
+    out[1] = y + qw * ty + (qz * tx - qx * tz);
+    out[2] = z + qw * tz + (qx * ty - qy * tx);
+  }
+
+  /* Rotate (x, y, z) by the quaternion (qx, qy, qz, qw) into out. */
+  function rotate(qx, qy, qz, qw, x, y, z, out) {
     const tx = 2 * (qy * z - qz * y);
     const ty = 2 * (qz * x - qx * z);
     const tz = 2 * (qx * y - qy * x);
@@ -342,25 +361,76 @@ export function createAttitudeHud(parent, bend) {
     }
   }
 
-  /* The waterline: where the nose points. On a tilted mount the nose is
-   * below the lens axis by the tilt, straight down the picture in camera
-   * terms whatever the craft is doing. */
-  function drawWaterline(s) {
-    if (!projectLocal(0, -Math.sin(tiltNow), -Math.cos(tiltNow))) {
-      return;
-    }
-    const x = pt.x;
-    const y = pt.y;
-    const a = 9 * s;
+  /* The W itself, centred on (x, y): wings out to 4a, or to 2a when it
+   * sits on the edge and needs the room for its arrow. */
+  function waterlineAt(x, y, a, wings, s) {
     ctx.beginPath();
-    ctx.moveTo(x - 4 * a, y);
+    ctx.moveTo(x - wings * a, y);
     ctx.lineTo(x - 2 * a, y);
     ctx.lineTo(x - a, y + a);
     ctx.lineTo(x, y);
     ctx.lineTo(x + a, y + a);
     ctx.lineTo(x + 2 * a, y);
-    ctx.lineTo(x + 4 * a, y);
+    ctx.lineTo(x + wings * a, y);
     ctx.lineJoin = 'miter';
+    strokeTwice(s, MINT);
+  }
+
+  /*
+   * The waterline: where the nose points. On a tilted mount the nose is
+   * below the lens axis by the tilt; with the head turned the gimbal swings
+   * it across the picture, and when it leaves the picture, or is behind
+   * the lens, the W waits on the edge nearest it with an arrow pointing the
+   * way to it, so a pilot looking sideways can always find the heading.
+   */
+  function drawWaterline(s) {
+    const a = 9 * s;
+    const cx = F.w / 2;
+    const cy = F.h / 2;
+    const m = 6 * a;
+    let dx = 0;
+    let dy = 0;
+    if (projectLocal(nose[0], nose[1], nose[2])) {
+      if (pt.x >= m && pt.x <= F.w - m && pt.y >= m && pt.y <= F.h - m) {
+        waterlineAt(pt.x, pt.y, a, 4, s);
+        return;
+      }
+      dx = pt.x - cx;
+      dy = pt.y - cy;
+    } else {
+      /* Behind the lens: its sideways and up parts still say which way to
+       * turn. Straight behind says nothing, so point down. */
+      dx = nose[0];
+      dy = -nose[1];
+    }
+    let d = Math.hypot(dx, dy);
+    if (d < 1e-6) {
+      dx = 0;
+      dy = 1;
+      d = 1;
+    }
+    const ux = dx / d;
+    const uy = dy / d;
+    const k = Math.min(
+      Math.abs(ux) > 1e-6 ? (cx - m) / Math.abs(ux) : Infinity,
+      Math.abs(uy) > 1e-6 ? (cy - m) / Math.abs(uy) : Infinity,
+    );
+    if (!(k > 0)) {
+      return;
+    }
+    const x = cx + ux * k;
+    const y = cy + uy * k;
+    waterlineAt(x, y, a, 2, s);
+    /* The arrow, beyond the W toward the nose. */
+    const ax = x + ux * 3.4 * a;
+    const ay = y + uy * 3.4 * a;
+    const bx = -uy;
+    const by = ux;
+    ctx.beginPath();
+    ctx.moveTo(ax + ux * a, ay + uy * a);
+    ctx.lineTo(ax - ux * 0.4 * a + bx * a, ay - uy * 0.4 * a + by * a);
+    ctx.lineTo(ax - ux * 0.4 * a - bx * a, ay - uy * 0.4 * a - by * a);
+    ctx.closePath();
     strokeTwice(s, MINT);
   }
 
@@ -457,21 +527,38 @@ export function createAttitudeHud(parent, bend) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
       drawn = true;
-      if (F.style === 'craft' && F.tilt !== 0) {
-        /* Q = camera * (rotation about its x by -tilt). */
+      /* M = camera * gimbal back to the mount, or the camera alone. */
+      const hx = F.hx || 0;
+      const hy = F.hy || 0;
+      const hz = F.hz || 0;
+      const hw = F.hw === undefined ? 1 : F.hw;
+      M.x = F.qw * hx + F.qx * hw + F.qy * hz - F.qz * hy;
+      M.y = F.qw * hy - F.qx * hz + F.qy * hw + F.qz * hx;
+      M.z = F.qw * hz + F.qx * hy - F.qy * hx + F.qz * hw;
+      M.w = F.qw * hw - F.qx * hx - F.qy * hy - F.qz * hz;
+      if (F.style === 'craft') {
+        /* Q = mount * (rotation about its x by -tilt): the lens looking
+         * along the nose, whatever the tilt and wherever the head is, as a
+         * Betaflight OSD draws it from the craft alone. The nose is then
+         * the middle of the picture. */
         const sh = Math.sin(-F.tilt / 2);
         const ch = Math.cos(-F.tilt / 2);
-        Q.x = F.qw * sh + F.qx * ch;
-        Q.y = F.qy * ch + F.qz * sh;
-        Q.z = F.qz * ch - F.qy * sh;
-        Q.w = F.qw * ch - F.qx * sh;
-        tiltNow = 0;
+        Q.x = M.w * sh + M.x * ch;
+        Q.y = M.y * ch + M.z * sh;
+        Q.z = M.z * ch - M.y * sh;
+        Q.w = M.w * ch - M.x * sh;
+        nose[0] = 0;
+        nose[1] = 0;
+        nose[2] = -1;
       } else {
+        /* True horizon: through the camera itself, so the horizon and
+         * ladder lie on the picture's. The nose, below the mount's axis by
+         * the tilt, comes into the camera through the gimbal. */
         Q.x = F.qx;
         Q.y = F.qy;
         Q.z = F.qz;
         Q.w = F.qw;
-        tiltNow = F.tilt;
+        rotate(hx, hy, hz, hw, 0, -Math.sin(F.tilt), -Math.cos(F.tilt), nose);
       }
       CREAM = AHI_COLOUR_HEX[F.colour] || AHI_COLOUR_HEX.cream;
       ctx.globalAlpha = (AHI_OPACITIES.includes(F.opacity) ? F.opacity : 100) / 100;
