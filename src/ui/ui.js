@@ -261,6 +261,10 @@ import {
   downloadCli, drawAttitude, FcSession, paintPageStrip, paintTabStrip,
 } from './fc.js';
 import { wishlistAllowed } from '../steam/edition.js';
+import {
+  GIMBAL_DEFAULTS, HEAD_DEADZONES, HEAD_EXPOS, HEAD_PANS, HEAD_SENS, HEAD_SMOOTHING, HEAD_SPEEDS, HEAD_STYLES,
+  HEAD_TILTS, headSettingKey,
+} from '../head/gimbal.js';
 import { fcDumpKeyFor, readFcDump, writeFcDump } from '../fc/dump.js';
 /*
  * The pilot's own tracks live in this browser, and the Track room lists
@@ -293,7 +297,7 @@ const SCREEN_ACTIONS = new Set([
   'courses', 'race', 'freestyle', 'pilot', 'quad', 'launch', 'standings', 'rates', 'pids', 'fc',
   'howto', 'tricks', 'credits', 'trackbuilder', 'trackbuilder-new', 'mapbuilder', 'builder', 'remix', 'editown',
   'choosepad', 'calibrate', 'calibrate-check', 'stickhelp', 'stickhelp-calibrate', 'stickhelp-check',
-  'advanced', 'card-launch',
+  'advanced', 'headtrack', 'card-launch',
 ]);
 
 /*
@@ -391,7 +395,7 @@ const ROOM_PARENTS = new Set(['courses', 'freestyle', 'launch', 'quad', 'pilot']
 
 /* The rooms whose list is their content, sized to the window by
  * fitMenuHeight. */
-const FIT_SCREENS = new Set(['pilot', 'advanced', 'quad', 'rates', 'pids', 'launch', 'stickhelp', 'standings', 'paused']);
+const FIT_SCREENS = new Set(['pilot', 'advanced', 'headtrack', 'quad', 'rates', 'pids', 'launch', 'stickhelp', 'standings', 'paused']);
 
 /*
  * ONE NAME PER ROOM, and it is the name of what the room holds
@@ -419,6 +423,7 @@ const SCREEN_TITLES = {
   credits: 'About',
   stickhelp: 'Stick help',
   advanced: 'Advanced',
+  headtrack: 'Head tracking',
   calibrate: 'Calibrate sticks',
   padpick: 'Choose joystick',
 };
@@ -445,6 +450,7 @@ const CRUMBS = {
   credits: ['About'],
   stickhelp: ['Settings', 'Stick help'],
   advanced: ['Settings', 'Advanced'],
+  headtrack: ['Settings', 'Head tracking'],
   calibrate: ['Settings', 'Calibrate sticks'],
   padpick: ['Settings', 'Choose joystick'],
   title: ['WebFPV'],
@@ -1750,6 +1756,19 @@ const DEFAULTS = {
    */
   showFps: false,
   /*
+   * HEAD TRACKING (src/head/): the webcam turns the FPV camera the way a
+   * head tracker turns a pan and tilt gimbal on a real quad. Off by
+   * default, because it asks for the camera, and only ever on the pilot's
+   * own say. headCamera is a device id from the browser, '' for its
+   * choice. The head* knobs below are its room's (Settings, Head
+   * tracking); their lists live in src/head/gimbal.js and loadSettings
+   * holds each to its list. Only the picture: the flight never sees any
+   * of it.
+   */
+  headTrack: false,
+  headCamera: '',
+  ...Object.fromEntries(Object.entries(GIMBAL_DEFAULTS).map(([k, v]) => [headSettingKey(k), v])),
+  /*
    * STICK OVERLAY: the two gimbals at the bottom of the flight picture, a
    * dot on each following the live sticks. On by default, so a pilot on a
    * radio or a gamepad sees what the quad is being told, which they did not
@@ -2240,6 +2259,16 @@ export function loadSettings() {
     ['ghost', ['off', 'best', 'previous', 'top3']],
     ['freestyleScoring', FREESTYLE_SCORING],
     ['crosshair', CROSSHAIRS],
+    ['headStyle', HEAD_STYLES],
+    ['headSensYaw', HEAD_SENS],
+    ['headSensPitch', HEAD_SENS],
+    ['headSensRoll', HEAD_SENS],
+    ['headDeadzone', HEAD_DEADZONES],
+    ['headExpo', HEAD_EXPOS],
+    ['headSmoothing', HEAD_SMOOTHING],
+    ['headServoYaw', HEAD_PANS],
+    ['headServoPitch', HEAD_TILTS],
+    ['headServoSpeed', HEAD_SPEEDS],
     ['inView', IN_VIEW],
     ['graphicsAutoRaised', ['', ...GRAPHICS_IDS]],
     ['graphicsAutoCeiling', ['', ...GRAPHICS_IDS]],
@@ -7428,6 +7457,35 @@ export class Ui {
     this.screens.advanced = advanced;
 
     /*
+     * HEAD TRACKING, one door down from Settings, built as Advanced is,
+     * with the webcam's picture in its lede: mirrored like a mirror, the
+     * nose and eye points the tracker found, and the camera's pan, tilt and
+     * roll. Drawn by drawHeadPreview, which main.js calls each frame only
+     * while this room is open.
+     */
+    const headtrack = el('div', 'screen screen-page screen-pilot screen-headtrack');
+    headtrack.append(el('h2', null, 'Head tracking'));
+    const headLede = el('div', 'headtrack-lede');
+    this.headPreview = el('canvas', 'headtrack-preview');
+    this.headPreview.width = 192;
+    this.headPreview.height = 144;
+    this.headStatusLine = el('p', 'rates-lede', '');
+    headLede.append(this.headPreview, this.headStatusLine);
+    headtrack.append(headLede);
+    const headBlock = wrapMenu();
+    this.headtrackMenu = headBlock.menu;
+    this.headtrackMenu.classList.add('menu-scroll');
+    this.headtrackHelp = headBlock.help;
+    headtrack.append(headBlock.stage);
+    this.screens.headtrack = headtrack;
+    /* main.js sets these: the tracker, the camera list once the browser
+     * names its cameras, and whether calibration is measuring. */
+    this.headTracker = null;
+    this.headCameras = [];
+    this.headCal = false;
+    this.headStatusText = '';
+
+    /*
      * STANDINGS: the board, in the game.
      *
      * "Open the board" was two problems in one row. It is jargon, so it
@@ -11718,6 +11776,14 @@ export class Ui {
           (id) => CROSSHAIR_LABEL[id],
           (id) => { s.crosshair = id; },
         ),
+        /* THE DOOR TO HEAD TRACKING'S ROOM, the Rates row's shape: a door
+         * that says what is behind it. */
+        {
+          label: 'Head tracking',
+          value: s.headTrack === true ? 'On' : 'Off',
+          action: 'headtrack',
+          note: 'Your webcam turns the camera on the quad, like a head tracker on a real FPV gimbal. Look left and the view pans left. Sensitivity, style and recentering are inside.',
+        },
         toggle(
           'Show FPS',
           s.showFps
@@ -11776,6 +11842,12 @@ export class Ui {
         ),
         { label: 'Back', action: 'back' },
       ];
+    }
+
+    /* HEAD TRACKING: the rows Settings sends here. See the room's comment
+     * in build(). The knobs take effect on the next flight frame. */
+    if (this.screen === 'headtrack') {
+      return this.headtrackItems(s);
     }
 
     /* ADVANCED: the rows Settings sends here. See the room's comment. */
@@ -12847,6 +12919,7 @@ export class Ui {
       freestyle: this.freestyleMenu,
       pilot: this.pilotMenu,
       advanced: this.advancedMenu,
+      headtrack: this.headtrackMenu,
       quad: this.quadMenu,
       launch: this.launchMenu,
       standings: this.standingsMenu,
@@ -13267,6 +13340,7 @@ export class Ui {
       freestyle: this.freestyleHelp,
       pilot: this.pilotHelp,
       advanced: this.advancedHelp,
+      headtrack: this.headtrackHelp,
       quad: this.quadHelp,
       launch: this.launchHelp,
       standings: this.standingsHelp,
@@ -18398,6 +18472,7 @@ export class Ui {
         ...keyHowtoRows(this.settings.stickMode, this.settings.keyThrottle),
         ['L', 'Launch control, if you turned it on in Quad. Pitch, centre, punch.'],
         ['M', 'Switches Angle and Acro in flight, and keeps the choice.'],
+        ['C', 'With head tracking on, makes where your head points now straight ahead.'],
         ['R, then Escape', 'Back to the start line, and pause.'],
         ['Turtle', 'If you end up inverted on the ground, a TURTLE MODE prompt appears. Pitch or roll with the arrow keys to flip over. You do not have to time it. Let go, then take off.'],
         ['F8', 'Report a bug or give feedback. Pauses if you are in the air, then opens the form.'],
@@ -21653,6 +21728,241 @@ export class Ui {
     saveSettings(this.settings);
   }
 
+  /* What the Head tracking room says about the tracker, in a sentence. */
+  headStatusWords() {
+    const t = this.headTracker;
+    if (!t || this.settings.headTrack !== true) {
+      return 'Off. Turn it on and the browser asks to use your camera. The picture stays on this machine: nothing is sent anywhere.';
+    }
+    switch (t.status) {
+      case 'loading':
+        return 'Starting the camera and the face model.';
+      case 'tracking':
+        return `Tracking your head${t.delegate ? ` (${t.delegate})` : ''}.`;
+      case 'noface':
+        return 'The camera is on but sees no face. Face it, with some light on you.';
+      case 'denied':
+        return 'The camera was refused. Allow it for this site (the camera icon by the address), then turn this off and on.';
+      case 'unsupported':
+        return t.message || 'This browser cannot run the face tracker.';
+      case 'error':
+        return `It did not start: ${t.message || 'an unknown error'}.`;
+      default:
+        return 'Off.';
+    }
+  }
+
+  /*
+   * The room's live picture, called by main.js each frame while the room is
+   * open. The status line is written only when it changes.
+   */
+  drawHeadPreview(cam) {
+    const words = this.headStatusWords();
+    if (words !== this.headStatusText) {
+      this.headStatusText = words;
+      Ui.text(this.headStatusLine, words);
+    }
+    const c = this.headPreview;
+    const g = c.getContext('2d');
+    const w = c.width;
+    const h = c.height;
+    g.fillStyle = '#0b1116';
+    g.fillRect(0, 0, w, h);
+    const t = this.headTracker;
+    const v = t && this.settings.headTrack === true ? t.video : null;
+    if (!v || v.readyState < 2) {
+      return;
+    }
+    /* Mirrored, so the pilot sees themselves as in a mirror. */
+    g.save();
+    g.translate(w, 0);
+    g.scale(-1, 1);
+    g.drawImage(v, 0, 0, w, h);
+    g.restore();
+    const m = t.marks;
+    if (m) {
+      g.fillStyle = '#8dffb0';
+      for (let i = 0; i < 6; i += 2) {
+        g.beginPath();
+        g.arc((1 - m[i]) * w, m[i + 1] * h, i === 0 ? 4 : 3, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+    if (cam) {
+      const d = (r) => Math.round((r * 180) / Math.PI);
+      const text = `PAN ${d(cam.yaw)}  TILT ${d(cam.pitch)}  ROLL ${d(cam.roll)}`;
+      g.font = '11px monospace';
+      g.lineWidth = 3;
+      g.strokeStyle = 'rgba(11,17,22,0.85)';
+      g.fillStyle = '#f3ead4';
+      g.strokeText(text, 6, h - 7);
+      g.fillText(text, 6, h - 7);
+    }
+  }
+
+  /* HEAD TRACKING'S ROWS. See the room's comment in build(). */
+  headtrackItems(s) {
+    const on = s.headTrack === true;
+    const servo = s.headStyle === 'servo';
+    const sens = (n) => `${n}x`;
+    const pad = this.padInfo;
+    return [
+      toggle(
+        'Head tracking',
+        on
+          ? 'On: your head turns the camera in flight. C, or a switch set below, makes where you look straight ahead.'
+          : 'Off: the camera is fixed to the quad as usual. Turning it on asks for your camera; the picture never leaves this machine.',
+        on,
+        (v) => { s.headTrack = v; },
+      ),
+      { label: 'Straight ahead', section: true },
+      {
+        label: 'Recenter',
+        action: 'headtrack-recenter',
+        note: 'Look at the middle of the screen and choose this: that becomes straight ahead. C does the same in flight. It also happens by itself a second after your face is first found.',
+      },
+      {
+        label: 'Calibrate',
+        value: this.headCal ? 'Measuring' : '',
+        action: 'headtrack-calibrate',
+        note: this.headCal
+          ? 'Now turn your head as far left, right, up and down as you can while still reading the screen. Then choose this row again and the sensitivity is set from how far you turned.'
+          : `Sets the sensitivity for you. Look at the middle of the screen and choose this, turn your head as far as you comfortably can while still reading the screen, then choose it again. The camera will then reach ${servo ? 'the gimbal\'s stops' : '90 degrees to each side and 45 up and down'} at that turn.`,
+      },
+      { label: 'Response', section: true },
+      choice(
+        'Style',
+        servo
+          ? 'Servo gimbal: a pan and tilt gimbal on the quad. It stops at its travel and moves no faster than its servos, a little behind your head, like the real thing.'
+          : 'Look: the camera goes where your head says, smoothly and with as little delay as the webcam allows, far enough to see behind you.',
+        HEAD_STYLES,
+        s.headStyle,
+        (id) => (id === 'servo' ? 'Servo gimbal' : 'Look'),
+        (id) => { s.headStyle = id; },
+      ),
+      choice(
+        'Sensitivity, pan',
+        `How much the camera turns for each degree your head turns. At ${s.headSensYaw}x, turning your head 30 degrees turns the camera ${Math.round(30 * s.headSensYaw)}. Above 1 your eyes can stay on the screen.`,
+        HEAD_SENS,
+        s.headSensYaw,
+        sens,
+        (n) => { s.headSensYaw = n; },
+      ),
+      choice(
+        'Sensitivity, tilt',
+        `The same for looking up and down. At ${s.headSensPitch}x, a 20 degree nod tilts the camera ${Math.round(20 * s.headSensPitch)}.`,
+        HEAD_SENS,
+        s.headSensPitch,
+        sens,
+        (n) => { s.headSensPitch = n; },
+      ),
+      toggle(
+        'Roll',
+        s.headRoll
+          ? 'On: leaning your head to a shoulder rolls the camera with it.'
+          : 'Off: leaning your head does nothing. Most pilots leave it off; a gimbal rarely rolls.',
+        s.headRoll === true,
+        (v) => { s.headRoll = v; },
+      ),
+      ...(s.headRoll ? [choice(
+        'Sensitivity, roll',
+        'How much the camera rolls for each degree your head leans.',
+        HEAD_SENS,
+        s.headSensRoll,
+        sens,
+        (n) => { s.headSensRoll = n; },
+      )] : []),
+      choice(
+        'Dead zone',
+        'Head movement that does nothing, so sitting still gives a still picture. Raise it if the view drifts while you hold still.',
+        HEAD_DEADZONES,
+        s.headDeadzone,
+        (n) => (n ? `${n} deg` : 'None'),
+        (n) => { s.headDeadzone = n; },
+      ),
+      choice(
+        'Smoothing',
+        'Low follows quick glances closely and shows more webcam jitter; high is calm and a little slower.',
+        HEAD_SMOOTHING,
+        s.headSmoothing,
+        (n) => ({ 0: 'Least', 0.25: 'Low', 0.5: 'Medium', 0.75: 'High', 1: 'Most' })[n],
+        (n) => { s.headSmoothing = n; },
+      ),
+      choice(
+        'Expo',
+        'Softens small head movements and keeps the full turn at the ends, like stick expo.',
+        HEAD_EXPOS,
+        s.headExpo,
+        (n) => (n ? `${Math.round(n * 100)}%` : 'None'),
+        (n) => { s.headExpo = n; },
+      ),
+      toggle(
+        'Invert pan',
+        s.headInvertYaw ? 'On: turning left pans right.' : 'Off: turning left pans left.',
+        s.headInvertYaw === true,
+        (v) => { s.headInvertYaw = v; },
+      ),
+      toggle(
+        'Invert tilt',
+        s.headInvertPitch ? 'On: looking up tilts down.' : 'Off: looking up tilts up.',
+        s.headInvertPitch === true,
+        (v) => { s.headInvertPitch = v; },
+      ),
+      ...(servo ? [
+        { label: 'Gimbal', section: true },
+        choice(
+          'Pan travel',
+          'How far the gimbal can pan each way before it hits its stop.',
+          HEAD_PANS,
+          s.headServoYaw,
+          (n) => `${n} deg`,
+          (n) => { s.headServoYaw = n; },
+        ),
+        choice(
+          'Tilt travel',
+          'How far it can tilt up and down from the camera angle.',
+          HEAD_TILTS,
+          s.headServoPitch,
+          (n) => `${n} deg`,
+          (n) => { s.headServoPitch = n; },
+        ),
+        choice(
+          'Servo speed',
+          'The fastest the servos turn. Slower feels heavier and lags quick glances; a typical small servo is 300 to 600.',
+          HEAD_SPEEDS,
+          s.headServoSpeed,
+          (n) => `${n} deg/s`,
+          (n) => { s.headServoSpeed = n; },
+        ),
+      ] : []),
+      { label: 'Camera', section: true },
+      ...(this.headCameras.length > 1 ? [choice(
+        'Camera',
+        'Which camera watches you.',
+        ['', ...this.headCameras.map((c) => c.id)],
+        s.headCamera,
+        (id) => (id ? (this.headCameras.find((c) => c.id === id) || {}).label || 'Camera' : 'Default'),
+        (id) => { s.headCamera = id; },
+      )] : []),
+      ...(pad && pad.count > 0 && pad.using !== 'Keyboard' ? [{
+        label: 'Recenter switch',
+        value: pad.headCentreCapturing ? 'Flip it now' : (pad.headCentre || 'Not set'),
+        action: 'headcentre-switch',
+        note: pad.headCentreCapturing
+          ? 'Flip the switch or press the button you want to recenter with. Choose this row again to stop.'
+          : (pad.headCentre
+            ? 'In flight, flipping it makes where you look straight ahead, like C. Choose this row to pick another.'
+            : 'A switch or button on your radio that recenters in flight, like C on the keyboard. Choose this row, then flip it.'),
+      }] : []),
+      ...(pad && pad.headCentre && !pad.headCentreCapturing ? [{
+        label: 'Forget recenter switch',
+        action: 'headcentre-switch-clear',
+        note: 'C on the keyboard still recenters.',
+      }] : []),
+      { label: 'Back', action: 'back' },
+    ];
+  }
+
   /* Auto graphics' resolution factor as it stands, for the Graphics row's
    * note. Repainted only where that row is showing. */
   setAutoScale(f) {
@@ -23912,7 +24222,7 @@ export class Ui {
      */
     if (action === 'howto' || action === 'pilot' || action === 'quad'
       || action === 'courses' || action === 'freestyle' || action === 'credits'
-      || action === 'tricks' || action === 'stickhelp' || action === 'advanced') {
+      || action === 'tricks' || action === 'stickhelp' || action === 'advanced' || action === 'headtrack') {
       /*
        * A room opened FROM another room remembers which, so Back is the way
        * you came rather than a jump to the title. Only from a real room,

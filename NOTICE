@@ -369,3 +369,24 @@ the kind of thing that is discovered by somebody else.
 triangles, 15 kB. Its shapes follow the source's measurements and nothing of
 its textures is kept. Until the source's licence is known it should be treated
 as the owner's own supply and not as GPLv3 grant material.
+
+## MediaPipe Tasks Vision, for head tracking
+
+    Upstream    https://github.com/google-ai-edge/mediapipe (npm @mediapipe/tasks-vision)
+    Version     1.2.0, published 2026-10-27
+    Licence     Apache-2.0, Copyright Google LLC (the package, and the three
+                models in face_landmarker.task: BlazeFace short range, Face
+                Mesh V2 and Blendshape V2, per Google's model cards)
+    Vendored at vendor/mediapipe/
+    Files       listed with their sources, sizes and SHA-256 in
+                vendor/mediapipe/MANIFEST.json, written by
+                scripts/vendor-mediapipe.js
+    Licence text travels with them at vendor/mediapipe/LICENSE
+
+Apache-2.0 into GPLv3 is a one way fit, as MIT is above: the files are
+incorporated unchanged with their own notices, and the combined work ships
+under GPLv3. The WebAssembly module is object code built by Google from the
+MediaPipe repository named above; its source is published there. Nothing of
+it is loaded until a pilot switches head tracking on (src/head/), and it runs
+in its own worker and its own WebAssembly instance, apart from the flight
+model. How to move to a newer release: prompts/vendor-mediapipe.md.

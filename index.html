@@ -294,6 +294,20 @@
       @keyframes launch-blink {
         50% { opacity: 0.2; }
       }
+      /* Head tracking's word on the picture (src/head/, main.js headMark):
+         HEAD LOST while the webcam sees no face, and while it starts or has
+         failed. Small and low, in the OSD's amber with its ink edge, so it
+         says something is off without covering the gap ahead. */
+      .osd-head {
+        position: absolute; left: 50%; bottom: 22%;
+        transform: translate(-50%, 0);
+        font-size: 14px; font-weight: 700;
+        letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--amber);
+        text-shadow: var(--osd-edge-2);
+        pointer-events: none; white-space: nowrap;
+      }
+      .osd-head[hidden] { display: none; }
       /* The crosshairs: Settings, HUD, Crosshairs. A zero sized box pinned
          at the centre of the canvas, the camera's axis, and each piece
          placed from that point, so no shape depends on the window's size.
@@ -4220,6 +4234,18 @@
         color: rgba(235, 230, 215, 0.78);
         font-size: 15px; line-height: 1.6; text-align: center;
       }
+      /* The Head tracking room's lede: the webcam's picture beside the
+         tracker's status, one line at phone width. */
+      .headtrack-lede {
+        display: flex; align-items: center; justify-content: center;
+        gap: 16px; flex-wrap: wrap; margin: 0 auto 8px; max-width: 48em;
+      }
+      .headtrack-preview {
+        width: 192px; height: 144px; flex: none;
+        border-radius: 6px; border: 1px solid rgba(243, 234, 212, 0.25);
+        background: #0b1116;
+      }
+      .headtrack-lede .rates-lede { flex: 1 1 14em; margin: 0; text-align: left; }
       /*
        * Column one of .menu-stage, the seat the quad takes on Settings.
        *

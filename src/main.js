@@ -85,6 +85,8 @@ import { readCounterBest, writeCounterBest } from './game/counterbest.js';
 import { GhostBook, GhostLap, GhostRecorder } from './game/ghost.js';
 import { buildGhostCraft } from './render/ghostcraft.js';
 import { buildPropView } from './render/propview.js';
+import { createHeadTracker } from './head/headtrack.js';
+import { createGimbal, GIMBAL_DEFAULTS, headSettingKey, resetGimbal, stepGimbal, suggestSensitivity } from './head/gimbal.js';
 import { warmPrograms } from './render/warm.js';
 import { decodeGhost, encodeGhost, ghostFromBase64, ghostToBase64 } from './share/ghostdata.js';
 import { uploadWorld, setWorldFrame, setMover, setBoxHeight, kindOf, setVehicleClock, readVehicles, makeVehiclePoses, moverVelocityInPlant, vehicleSurfaceInPlant } from './game/plantworld.js';
@@ -469,6 +471,7 @@ async function fetchBytes(url, onProgress) {
 /* Reused rather than allocated at every spawn. */
 const AXIS_Y = new THREE.Vector3(0, 1, 0);
 const AXIS_X = new THREE.Vector3(1, 0, 0);
+const AXIS_Z = new THREE.Vector3(0, 0, 1);
 
 /* The Quad room's flight mode caption (syncAngleMode), one of four fixed
  * strings, so choosing it on a frame builds nothing. */
@@ -847,6 +850,56 @@ export async function boot({ loading, bootStart, mapId }) {
     canvas.style.cursor = 'none';
   }
   const ui = new Ui(uiRoot);
+  /*
+   * HEAD TRACKING (src/head/): the pilot's webcam turns the FPV camera the
+   * way a head tracker turns a pan and tilt gimbal on a real quad. The
+   * gimbal's pan turns about the frame's up, ahead of the camera's uptilt,
+   * and the head's tilt and roll after it, so the flight camera is
+   * qPrev qPan qTilt qHeadPitch qHeadRoll. Render only: the plant, the
+   * trace and the replays never see it. qHeadInv takes the camera back to
+   * its mount, for the props in view, which are on the frame.
+   */
+  const qPan = new THREE.Quaternion();
+  const qHeadPitch = new THREE.Quaternion();
+  const qHeadRoll = new THREE.Quaternion();
+  const qHeadInv = new THREE.Quaternion();
+  const headTracker = createHeadTracker();
+  const headGimbal = createGimbal();
+  const headSample = { valid: false, yaw: 0, pitch: 0, roll: 0 };
+  /* The pilot's knobs, gathered from ui.settings in applySettings so the
+   * frame reads one object; GIMBAL_DEFAULTS' shape. */
+  const headCfg = { ...GIMBAL_DEFAULTS };
+  /* Composed into the camera this frame: on, in live flight, not replay. */
+  let headLive = false;
+  /* The camera the tracker has open, to reopen on a change. */
+  let headCamera = null;
+  /* The OSD's word when tracking is on and not following the head, written
+   * only when it changes (no animation loop, like src/ui/scorehud.js). */
+  const headMark = document.createElement('div');
+  headMark.className = 'osd-head';
+  headMark.hidden = true;
+  ui.osd.append(headMark);
+  let headMarkText = '';
+  function setHeadMark(text) {
+    if (text !== headMarkText) {
+      headMarkText = text;
+      headMark.textContent = text;
+      headMark.hidden = !text;
+    }
+  }
+  function headMarkFor() {
+    if (ui.settings.headTrack !== true || replayMode) {
+      return '';
+    }
+    const st = headTracker.status;
+    if (st === 'loading') {
+      return 'HEAD TRACKING STARTING';
+    }
+    if (st === 'denied' || st === 'unsupported' || st === 'error') {
+      return 'HEAD TRACKING OFF: SEE SETTINGS';
+    }
+    return headSample.valid ? '' : 'HEAD LOST';
+  }
   /* For the dogfight's Arm up page, which listens for a button or switch. */
   ui.input = input;
   /*
@@ -4148,6 +4201,8 @@ export async function boot({ loading, bootStart, mapId }) {
     fwd: 0,
     up: 0,
     height: (x, z, fromY) => view.height(x, z, fromY),
+    /* The head tracker's camera to mount rotation, or null. */
+    headInv: null,
   };
   /*
    * Into the world's scene as soon as the world is built, with its two
@@ -4190,6 +4245,7 @@ export async function boot({ loading, bootStart, mapId }) {
     o.tilt = cameraTiltRad(camTilt);
     o.fwd = simLenToWorld(CAMERA_LENS_FORWARD);
     o.up = simLenToWorld(CAMERA_LENS_UP);
+    o.headInv = headLive ? qHeadInv : null;
     propView.update(o);
   }
   const ghostSample = { px: 0, py: 0, pz: 0, qx: 0, qy: 0, qz: 0, qw: 1, cut: false };
@@ -9161,6 +9217,58 @@ export async function boot({ loading, bootStart, mapId }) {
     return timerLoop && !replayMode && !replayStepMode && !filmNow;
   }
 
+  /* C, the radio's recenter switch and the Settings row all come here. */
+  function headRecenter() {
+    if (headTracker.status !== 'tracking') {
+      notice = {
+        text: headTracker.status === 'noface' ? 'Head tracking cannot see your face.\nFace the camera, then press C.' : 'Head tracking is not running yet.',
+        untilMs: performance.now() + 2600,
+      };
+      return;
+    }
+    headTracker.recenter();
+    notice = { text: 'HEAD CENTRED\nC centres it again', untilMs: performance.now() + 1400 };
+  }
+  ui.headRecenter = headRecenter;
+  ui.headTracker = headTracker;
+  /* The room's notes follow the tracker; the camera list is asked for
+   * once tracking runs, because before the camera is allowed the browser
+   * does not name its cameras. */
+  headTracker.onStatus((st) => {
+    if (st === 'tracking' && ui.headCameras.length === 0) {
+      headTracker.cameras().then((list) => {
+        ui.headCameras = list;
+        if (ui.screen === 'headtrack') {
+          ui.renderMenu();
+        }
+      }, () => {});
+    }
+    if (st === 'off') {
+      ui.headCal = false;
+    }
+    if (ui.screen === 'headtrack') {
+      ui.renderMenu();
+    }
+  });
+
+  function applyHeadTracking(s) {
+    const on = s.headTrack === true;
+    const cam = s.headCamera || '';
+    if (on && (headTracker.status === 'off' || cam !== headCamera)) {
+      headCamera = cam;
+      resetGimbal(headGimbal);
+      headTracker.start(cam);
+    } else if (!on && headTracker.status !== 'off') {
+      headCamera = null;
+      headTracker.stop();
+      resetGimbal(headGimbal);
+    }
+    for (const k of Object.keys(GIMBAL_DEFAULTS)) {
+      headCfg[k] = s[headSettingKey(k)] ?? GIMBAL_DEFAULTS[k];
+    }
+    headTracker.setSmoothing(headCfg.smoothing);
+  }
+
   function applySettings(s) {
     /* Which clock draws the frames, from the Frame pacing row and the
      * graphics preset together (pacingTimerOn in ui.js), unless the ?loop=
@@ -9197,6 +9305,11 @@ export async function boot({ loading, bootStart, mapId }) {
         uiRoot.style.setProperty('--touch-scale', String(size.scale));
       }
     }
+    /* Head tracking: the camera is opened when the setting goes on and
+     * given back when it goes off, and a different camera picked in
+     * Settings reopens it. The knobs are copied into the one object the
+     * frame reads. */
+    applyHeadTracking(s);
     camTilt = clampCameraAngle(s.cameraAngle);
     s.cameraAngle = camTilt;
     qTilt.setFromAxisAngle(AXIS_X, cameraTiltRad(camTilt));
@@ -11054,6 +11167,54 @@ export async function boot({ loading, bootStart, mapId }) {
       } else {
         input.beginAutoResetCapture();
       }
+    } else if (action === 'headcentre-switch') {
+      if (!input.firstGamepad()) {
+        notice = noRadioBanner('reload');
+      } else if (input.headCapture) {
+        input.cancelHeadCapture();
+      } else {
+        input.beginHeadCapture();
+      }
+    } else if (action === 'headcentre-switch-clear') {
+      input.clearHeadSwitch();
+      notice = { text: 'Recenter switch forgotten.\nC on the keyboard still recenters.', untilMs: performance.now() + 2800 };
+    } else if (action === 'headtrack-recenter') {
+      headRecenter();
+      if (ui.headCal) {
+        headTracker.resetRange();
+      }
+    } else if (action === 'headtrack-calibrate') {
+      /* Two presses: the first recenters and starts measuring how far the
+       * head turns, the second sets each sensitivity from that reach. See
+       * suggestSensitivity in src/head/gimbal.js. */
+      if (!ui.headCal) {
+        if (headTracker.status !== 'tracking') {
+          headRecenter();
+        } else {
+          headTracker.recenter();
+          headTracker.resetRange();
+          ui.headCal = true;
+        }
+      } else {
+        ui.headCal = false;
+        const s = ui.settings;
+        const servo = s.headStyle === 'servo';
+        const yaw = suggestSensitivity(headTracker.range.yaw, servo ? s.headServoYaw : 90);
+        const pitch = suggestSensitivity(headTracker.range.pitch, servo ? s.headServoPitch : 45);
+        if (yaw === null && pitch === null) {
+          notice = { text: 'Calibration saw too little movement.\nTurn your head further, then try again.', untilMs: performance.now() + 3200 };
+        } else {
+          if (yaw !== null) {
+            s.headSensYaw = yaw;
+          }
+          if (pitch !== null) {
+            s.headSensPitch = pitch;
+          }
+          ui.writeSettings();
+          notice = { text: `Sensitivity set: pan ${s.headSensYaw}x, tilt ${s.headSensPitch}x.`, untilMs: performance.now() + 3200 };
+        }
+      }
+      ui.renderMenu();
     } else if (action === 'autoreset-switch-clear') {
       input.clearAutoResetSwitch();
       notice = { text: 'Auto reset switch forgotten.\nThe setting stays as it is.', untilMs: performance.now() + 2800 };
@@ -11276,6 +11437,13 @@ export async function boot({ loading, bootStart, mapId }) {
       setCrashflip(false);
       turtleRecover = false;
       setDownNearby('x');
+      return;
+    }
+    /* Head tracking: wherever the head is now becomes straight ahead. C
+     * is free in flight; the overview's fly camera reads it only while
+     * paused (ovCtl). */
+    if (code === 'KeyC' && ui.screen === 'flight' && mode === 'flight' && ui.settings.headTrack === true) {
+      headRecenter();
       return;
     }
     /* Angle or Acro, from the keyboard. See flipFlightMode. */
@@ -12087,6 +12255,19 @@ export async function boot({ loading, bootStart, mapId }) {
     }
     const blockStart = performance.now();
     const dt = Math.min(nowWall - prevWall, 100);
+    /* The face model only runs when its answer is used: flying, or the
+     * Head tracking room's preview. A pilot in any other menu pays for an
+     * open camera and nothing else. */
+    headTracker.setActive(mode === 'flight' || ui.screen === 'headtrack');
+    /* The room's preview: the gimbal is stepped here too, so its numbers
+     * answer the knobs as they are turned. */
+    if (ui.screen === 'headtrack') {
+      if (ui.settings.headTrack === true) {
+        headTracker.sample(performance.now(), headSample);
+        stepGimbal(headGimbal, headSample, headCfg, dt / 1000);
+      }
+      ui.drawHeadPreview(ui.settings.headTrack === true ? headGimbal.out : null);
+    }
     prevWall = nowWall;
     fps = fps * 0.95 + (dt > 0 ? 1000 / dt : 0) * 0.05;
     /* The manga layer's clock, before a crash can start its impact frame,
@@ -12171,6 +12352,15 @@ export async function boot({ loading, bootStart, mapId }) {
     }
     if (input.autoCapture && ui.screen !== 'pilot') {
       input.cancelAutoResetCapture();
+    }
+    /* The head tracker's recenter switch: taken every frame so a flip in a
+     * menu is spent there, acted on in flight only, where C acts. Its pick
+     * lives in the Head tracking room and is dropped on leaving it. */
+    if (input.takeHeadRecenter() && ui.screen === 'flight' && mode === 'flight' && ui.settings.headTrack === true) {
+      headRecenter();
+    }
+    if (input.headCapture && ui.screen !== 'headtrack') {
+      input.cancelHeadCapture();
     }
     /* The Auto reset switch, bug-918a8c99: see noteAutoResetSwitch in
      * input.js. Taken every frame so a flip in a menu is spent there; it
@@ -13353,7 +13543,24 @@ export async function boot({ loading, bootStart, mapId }) {
     }
     parkedViewY = parked ? fpvPos.y : null;
     lastFpvY = fpvPos.y;
-    fpvQuat.copy(qPrev).multiply(qTilt);
+    /* Head tracking, between the frame and the lens (see qPan). Stepped
+     * only in live flight; paused, it holds where it was. */
+    headLive = ui.settings.headTrack === true && !replayMode && mode !== 'title';
+    if (headLive) {
+      if (mode === 'flight') {
+        headTracker.sample(performance.now(), headSample);
+        stepGimbal(headGimbal, headSample, headCfg, dt / 1000);
+      }
+      const g = headGimbal.out;
+      qPan.setFromAxisAngle(AXIS_Y, g.yaw);
+      qHeadPitch.setFromAxisAngle(AXIS_X, g.pitch);
+      qHeadRoll.setFromAxisAngle(AXIS_Z, g.roll);
+      fpvQuat.copy(qPrev).multiply(qPan).multiply(qTilt).multiply(qHeadPitch).multiply(qHeadRoll);
+      /* Camera back to its mount: (qPan qTilt qHP qHR)^-1 qTilt. */
+      qHeadInv.copy(qPan).multiply(qTilt).multiply(qHeadPitch).multiply(qHeadRoll).invert().multiply(qTilt);
+    } else {
+      fpvQuat.copy(qPrev).multiply(qTilt);
+    }
     /*
      * Vibration, so the buzz the flight controller is fighting is something
      * the pilot can see. Driven by the motors' own speed out of the state
@@ -14323,7 +14530,9 @@ export async function boot({ loading, bootStart, mapId }) {
       /* The chips fade on the same test: see syncChipFade. */
       ui.syncChipFade(aloft, nowWall);
       updateTargetLock();
+      setHeadMark(headMarkFor());
     } else if (mode !== 'paused') {
+      setHeadMark('');
       ui.setStickOverlay({ show: false, roll: 0, pitch: 0, yaw: 0, throttle: 0 });
       ui.setAirSlider(false);
       ui.syncChipFade(false, nowWall);
@@ -14452,6 +14661,12 @@ export async function boot({ loading, bootStart, mapId }) {
       notice = autoSet === 'saved'
         ? { text: `Auto reset switch: ${padSum.autoReset}.\nA switch sets it on or off; a button toggles it.`, untilMs: nowWall + 3600 }
         : { text: `Auto reset switch: ${padSum.autoReset}, until you reload.\nThis browser would not keep it.`, untilMs: nowWall + 4800 };
+    }
+    const headSet = input.takeHeadResult();
+    if (headSet && padSum.headCentre) {
+      notice = headSet === 'saved'
+        ? { text: `Recenter switch: ${padSum.headCentre}.\nFlip it in flight to make where you look straight ahead.`, untilMs: nowWall + 3600 }
+        : { text: `Recenter switch: ${padSum.headCentre}, until you reload.\nThis browser would not keep it.`, untilMs: nowWall + 4800 };
     }
     const queuedPick = input.takePadPickQueue();
     if (queuedPick) {

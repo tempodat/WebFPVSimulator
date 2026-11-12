@@ -82,6 +82,14 @@ const RESTART_STORE_KEY = 'webfpv.restart.v1';
  * switch means; a button toggles it, because a button has no position.
  */
 const AUTORESET_STORE_KEY = 'webfpv.autoreset.v1';
+/*
+ * THE HEAD TRACKER'S RECENTER SWITCH (src/head/): a switch or button on the
+ * radio that makes wherever the pilot's head is now straight ahead, like C
+ * on the keyboard, so it can be done with both hands on the sticks. Picked
+ * and stored the way the restart switch is, under its own key and against
+ * the pad's id. A flip is one recenter.
+ */
+const HEADCENTRE_STORE_KEY = 'webfpv.headcentre.v1';
 /* An axis counts as the switch being flipped when it moves this far from
  * where it was when the row was chosen: half its travel, so a three
  * position switch moved one notch counts and a jittering gimbal does not. */
@@ -1908,6 +1916,12 @@ export class InputManager {
     this.autoCapture = null;
     this.autoEdge = null;
     this.autoResult = null;
+    /* The head tracker's recenter switch. See HEADCENTRE_STORE_KEY. */
+    this.headSpec = loadRestartSpec(HEADCENTRE_STORE_KEY);
+    this.headPrevOn = null;
+    this.headCapture = null;
+    this.headFired = false;
+    this.headResult = null;
     /* The dogfight's gun and missile. See GUN_STORE_KEY. weaponsLive is set
      * by main.js while a dogfight is flying; nothing is read while it is
      * not, except a pick in progress. */
@@ -2642,6 +2656,7 @@ export class InputManager {
    * held or flipped does not count. */
   beginRestartCapture() {
     this.cancelAutoResetCapture();
+    this.cancelHeadCapture();
     this.restartCapture = { id: null, buttons: null, axes: null };
     this.restartResult = null;
   }
@@ -2749,6 +2764,7 @@ export class InputManager {
 
   beginAutoResetCapture() {
     this.cancelRestartCapture();
+    this.cancelHeadCapture();
     this.autoCapture = { id: null, buttons: null, axes: null };
     this.autoResult = null;
   }
@@ -2774,6 +2790,66 @@ export class InputManager {
   takeAutoResetResult() {
     const r = this.autoResult;
     this.autoResult = null;
+    return r;
+  }
+
+  /*
+   * THE HEAD TRACKER'S RECENTER SWITCH, watched beside the restart switch
+   * on every poll that reads a radio, and read the same way: only the
+   * moment it goes on counts, and the flip that assigned it does not.
+   */
+  noteHeadSwitch(gp) {
+    if (this.headCapture) {
+      const spec = this.captureSwitch(this.headCapture, gp);
+      if (spec) {
+        this.headSpec = spec;
+        this.headCapture = null;
+        this.headPrevOn = restartOn(gp, spec);
+        this.headFired = false;
+        this.headResult = saveRestartSpec(spec, HEADCENTRE_STORE_KEY) ? 'saved' : 'unsaved';
+      }
+      return;
+    }
+    const spec = this.headSpec;
+    if (!spec || spec.id !== gp.id) {
+      this.headPrevOn = null;
+      return;
+    }
+    const on = restartOn(gp, spec);
+    if (this.headPrevOn === false && on) {
+      this.headFired = true;
+    }
+    this.headPrevOn = on;
+  }
+
+  beginHeadCapture() {
+    this.cancelRestartCapture();
+    this.cancelAutoResetCapture();
+    this.headCapture = { id: null, buttons: null, axes: null };
+    this.headResult = null;
+  }
+
+  cancelHeadCapture() {
+    this.headCapture = null;
+  }
+
+  clearHeadSwitch() {
+    this.headSpec = null;
+    this.headPrevOn = null;
+    this.headFired = false;
+    saveRestartSpec(null, HEADCENTRE_STORE_KEY);
+  }
+
+  /* One flip, one recenter. */
+  takeHeadRecenter() {
+    const fired = this.headFired;
+    this.headFired = false;
+    return fired;
+  }
+
+  takeHeadResult() {
+    const r = this.headResult;
+    this.headResult = null;
     return r;
   }
 
@@ -3548,6 +3624,12 @@ export class InputManager {
         ? describeRestart(this.autoSpec)
         : null,
       autoResetCapturing: Boolean(this.autoCapture),
+      /* headCentre    the head tracker's recenter switch for the pad in
+       *               use, worded as the restart one is, or null. */
+      headCentre: selected && this.headSpec && this.headSpec.id === selected.id
+        ? describeRestart(this.headSpec)
+        : null,
+      headCentreCapturing: Boolean(this.headCapture),
     };
   }
 
@@ -5050,6 +5132,7 @@ export class InputManager {
       this.noteStandardParked(gp, nowWall);
       this.noteRestartSwitch(gp);
       this.noteAutoResetSwitch(gp);
+      this.noteHeadSwitch(gp);
       this.noteWeapons(gp);
       if (this.stickCheck) {
         this.noteStickCheck(gp);
