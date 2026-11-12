@@ -31,6 +31,10 @@ const port = Number(process.env.PORT || 8000);
 const MIME = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
+  /* The head tracker's vendored runtime (vendor/mediapipe/) keeps its
+   * upstream name, and a module script served as anything but JavaScript
+   * is refused by the browser. */
+  ['.mjs', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
   ['.wasm', 'application/wasm'],
   ['.rec', 'application/octet-stream'],

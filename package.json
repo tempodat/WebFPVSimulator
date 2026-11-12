@@ -155,6 +155,8 @@
     "input:selftest": "node scripts/input-selftest.js",
     "autoscale:selftest": "node scripts/autoscale-selftest.js",
     "predict:selftest": "node scripts/predict-selftest.js",
+    "head:selftest": "node scripts/head-selftest.js",
+    "vendor:mediapipe": "node scripts/vendor-mediapipe.js",
     "music:selftest": "node scripts/music-selftest.js",
     "stats:selftest": "node scripts/stats-selftest.js",
     "support:selftest": "node scripts/support-selftest.js",

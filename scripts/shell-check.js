@@ -109,6 +109,7 @@ const ROOM_DOORS = [
   ['launch', 'pids', 'pids'],
   ['pilot', 'advanced', 'advanced'],
   ['pilot', 'attitude', 'attitude'],
+  ['pilot', 'headtrack', 'headtrack'],
 ];
 
 const SCREENS = [
@@ -132,6 +133,9 @@ const SCREENS = [
   /* Attitude indicator, from 12 November: its switch and its knobs, one
    * door down from Settings like Advanced. */
   'attitude',
+  /* Head tracking, from 12 November: the webcam gimbal's switch and knobs,
+   * one door down from Settings like Advanced. */
+  'headtrack',
 ];
 
 /*

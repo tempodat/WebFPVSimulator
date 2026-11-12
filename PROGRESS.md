@@ -75808,3 +75808,76 @@ The pilot, after the first HUD commit: check that the H announcement looks like 
 - Ran: `node --check` on the changed files; `lint:boot` 10 of 10 clean; `lint:preload` 2 passed after regenerating `src/fresh.js` (ui.js now imports the HUD module, which moved it in the boot order); `input:selftest` all 497 passed. The HUD drawn in Node with a stub canvas: True horizon at 30 degrees of tilt puts the horizon at y 788.7 of 1000, Betaflight at 500; step 20 draws rungs at 20, 40, 60 and 80; every mark off at 50 percent draws the horizon alone at alpha 0.5.
 - Not run: `lint:shell` (which now walks the new room), `lint:input`, `lint:responsive`, `shots.js`, all for want of Chromium; `npm run verify` (nothing in physics). Not flown.
 - What went wrong: nothing caught late this round. One note from the parallel gimbal session, kept for that branch: the waterline will need the inverse of the gimbal's rotation once a gimbal exists, so hudFrame should grow a gimbal field then.
+
+## 2026-11-12: head tracking for the FPV camera (branch feat/head-gimbal)
+
+### A new dependency, justified before it lands: MediaPipe Tasks Vision 1.2.0
+
+- What it is for: the pilot's webcam steers the FPV camera, the way a head tracker steers a pan and tilt gimbal on a real quad. That needs a head pose (yaw, pitch, roll) from a face in a video frame, many times a second, in the browser.
+- Why this library: `@mediapipe/tasks-vision`'s FaceLandmarker returns a facial transformation matrix per face, a head pose straight out of the model, so there is no landmark fitting, no solvePnP and no camera intrinsics to calibrate for rotation. It runs as its own WebAssembly module with a WebGL2 GPU path, in a worker, on Firefox and Chromium both. Considered and not taken: OpenCV.js with solvePnP (a bigger runtime and still needs a landmark model), and the TensorFlow.js face landmarks package (a bigger runtime round the same Google model).
+- Licence: Apache-2.0 for the package (npm metadata, and the LICENSE it ships), and Apache-2.0 for all three models in `face_landmarker.task` (BlazeFace short range, Face Mesh V2, Blendshape V2), read off Google's own model card PDFs on storage.googleapis.com/mediapipe-assets on 2026-11-12. Apache-2.0 into GPLv3 is a one way fit, like the MIT city in NOTICE: the combined work ships under GPLv3 and the Apache notice travels with the files, which keep their own headers.
+- How it is carried: committed, not fetched at run time. `vendor/mediapipe/` holds the ES module bundle, the ES module WASM loader and its SIMD WASM, and the model, about 19 MB, written by `npm run vendor:mediapipe` with a MANIFEST of versions, source URLs and SHA-256 sums. Nothing reaches a CDN or Google when a pilot turns tracking on, so it also holds in the Steam edition's offline rule. Only the SIMD build: every Chrome and Firefox that runs this sim's own module (reference types, bulk memory) has WASM SIMD; Safari 15.0 to 16.3 would say head tracking is not supported, and the sim itself still runs.
+- Why 1.2.0 and not 1.2.3: 1.2.3 was published the day before (2026-11-11). 1.2.0 (2026-10-27) is the newest release with two weeks behind it. `prompts/vendor-mediapipe.md` says how to move to the newest.
+- Cost: nothing at boot. The worker, the runtime and the model are loaded only when the pilot switches head tracking on, and none of it is in `src/fresh.js`'s preload list.
+
+### What was built
+
+- `src/head/gimbal.js`: the arithmetic, pure and allocation free.
+  - The face frame to the view's frame is a conjugation by a half turn about Y.
+  - The head is read relative to a recentred neutral, taken apart as pan, then tilt, then roll.
+  - A one euro filter per axis.
+  - Then dead zone, sensitivity (0.5x to 4x per axis, the owner's "sensitivity" knob), expo, limits.
+  - Two styles. Look: wide limits, a 720 deg/s guard. Servo gimbal: travel stops, a first order lag of about 40 ms, a slew limit.
+  - Face lost: hold 0.3 s, then a critically damped ease home.
+- `src/head/detect.js`: MediaPipe from `vendor/mediapipe/` only.
+  - The ES module WASM loader, so it loads in a module worker.
+  - GPU delegate on an OffscreenCanvas, CPU fallback.
+  - Matrix to quaternion with the face's scale divided out.
+- `src/head/worker.js`: detection in its own thread and its own WebAssembly instance.
+- `src/head/headtrack.js`: the page side.
+  - Camera at 640x480, 30 Hz.
+  - ImageBitmap frames, one in flight, sent only in flight or while the Settings preview is open.
+  - Status: off, loading, tracking, noface, denied, unsupported, error.
+  - Automatic recenter 1 s after the face is first found.
+  - Prediction to the frame's time, capped at 60 ms.
+  - Falls back to the page at 15 Hz when no module worker starts.
+- `src/main.js`:
+  - The flight camera becomes `qPrev qPan qTilt qHeadPitch qHeadRoll`, then the shake. It is applied only in live flight, never in replay, and never at the `__craftState` harness site, so captures stay deterministic.
+  - C recenters in flight. The radio recenter switch acts the same way.
+  - A HEAD LOST mark on the OSD, written only when its text changes.
+  - The Settings preview is stepped each frame while its room is open.
+  - Two press calibration: recenter, turn as far as you can still read the screen, press again. Sensitivity is set from the reach, to 90/45 degrees in Look or the gimbal's stops in Servo.
+- `src/render/propview.js`: the props in view are turned back by the gimbal's inverse about the lens, so they stay on the frame and swing out of the picture when looking sideways.
+- `src/input/input.js`: a third switch beside Restart and Auto reset, `webfpv.headcentre.v1`, picked and read exactly as the restart switch is (`captureSwitch`, `restartOn`).
+- `src/ui/ui.js`, `index.html`: a Head tracking door in Settings (Screen group, after Crosshairs) and a Head tracking room built as Advanced is.
+  - The room has a mirrored webcam preview with the nose and eye points and the camera's pan, tilt and roll.
+  - Rows: the switch, Recenter, Calibrate, Style, sensitivities, Roll, Dead zone, Smoothing, Expo, invert, the gimbal's travel and speed in Servo, the camera, and the recenter switch.
+  - DEFAULTS gain `headTrack` (off), `headCamera`, and the `head*` knobs from `GIMBAL_DEFAULTS`, each held to its list in loadSettings.
+  - The C key is in How to fly.
+- `scripts/serve.js`: serves `.mjs` as JavaScript; a module served as octet-stream is refused.
+- `scripts/shell-check.js`: walks the new room.
+- `scripts/vendor-mediapipe.js` (`npm run vendor:mediapipe`) and `prompts/vendor-mediapipe.md`: how the vendored files are made and moved to a newer release.
+
+### Two departures, named
+
+- `prompts/CLAUDE.md` (the Stage 1 copy) says there is no Web Worker yet. The flight is still entirely on the main thread. The new worker carries only face detection, which would otherwise cost the flight's frame time, and it never touches the plant.
+- The same file says three.js is the only thing on the render side. MediaPipe is input to the camera, not rendering, and it is loaded only when a pilot asks for it.
+
+### Checks this turn
+
+- Ran:
+  - `npm run head:selftest`: 32 passed. Covers signs per axis against the frame facts, matrix to quaternion through all four trace branches with scale and translation, recenter, sensitivity, limits, dead zone, invert, expo, servo stop, servo slew never over 400 deg/s, servo lag, face lost hold, ease home with no overshoot, and refind without a cut.
+  - `npm run lint:boot`: 10 of 10 clean.
+  - `npm run lint:preload`: 2 passed, 650 served. The head modules are listed; the vendored runtime is not.
+  - `npm run input:selftest`: all 497 passed.
+  - `npm run check:plant`: all passed, bit for bit. Render only, as claimed.
+  - `node --check` on every changed file.
+- Not run:
+  - `npm run build:wasm` and `npm run verify`: nothing in physics, plant, ABI or build changed, and the repository's rule is to ask first.
+  - `lint:shell`, `lint:input`, `shots.js`: no Chromium on this machine. `lint:shell` now walks the new room, and its pinned stop counts may need the new Settings row; unconfirmed.
+  - MediaPipe itself has not run in a browser here, so the worker load, the GPU delegate, the sign of each axis on a real face and the cost per frame are unverified until flown.
+  - Not flown.
+- What went wrong:
+  - The first SIMD probe module in `detect.js` had its code section one byte long, so `WebAssembly.validate` said false on every browser. Caught by validating the bytes in Node before use.
+  - The first draft sent frames before the worker answered ready. The worker drops those without a reply, which would have left `inFlight` set for good. Sends now wait for ready.
+  - The head state was first declared below code paths that can call `applySettings` early. It was moved up to just after `ui` is built, so there is no temporal dead zone.

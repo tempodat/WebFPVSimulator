@@ -174,6 +174,9 @@ function propDisc(r, fromBelow) {
   return g;
 }
 
+/* Scratch for the head tracker's inverse, written in place each frame. */
+const headMat = new THREE.Matrix4();
+
 export function buildPropView() {
   const group = new THREE.Group();
   group.name = 'prop-view';
@@ -440,6 +443,14 @@ export function buildPropView() {
         }
         camera.updateMatrixWorld();
         props.matrix.copy(camera.matrixWorld);
+        /* Head tracking turns the camera on the frame (src/head/), and the
+         * props are on the frame, so they are turned back by the gimbal's
+         * inverse about the lens: look sideways and they swing out of the
+         * picture, as they would through a real gimbal. */
+        if (o.headInv) {
+          headMat.makeRotationFromQuaternion(o.headInv);
+          props.matrix.multiply(headMat);
+        }
         props.matrixWorldNeedsUpdate = true;
         props.visible = props.geometry.getAttribute('position') !== undefined;
       }
