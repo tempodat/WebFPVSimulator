@@ -261,6 +261,9 @@ import {
   downloadCli, drawAttitude, FcSession, paintPageStrip, paintTabStrip,
 } from './fc.js';
 import { wishlistAllowed } from '../steam/edition.js';
+import {
+  AHI_STYLES, AHI_STYLE_LABEL, AHI_STEPS, AHI_SIZES, AHI_SIZE_LABEL, AHI_COLOURS, AHI_COLOUR_LABEL, AHI_OPACITIES,
+} from './attitudehud.js';
 import { fcDumpKeyFor, readFcDump, writeFcDump } from '../fc/dump.js';
 /*
  * The pilot's own tracks live in this browser, and the Track room lists
@@ -293,7 +296,7 @@ const SCREEN_ACTIONS = new Set([
   'courses', 'race', 'freestyle', 'pilot', 'quad', 'launch', 'standings', 'rates', 'pids', 'fc',
   'howto', 'tricks', 'credits', 'trackbuilder', 'trackbuilder-new', 'mapbuilder', 'builder', 'remix', 'editown',
   'choosepad', 'calibrate', 'calibrate-check', 'stickhelp', 'stickhelp-calibrate', 'stickhelp-check',
-  'advanced', 'card-launch',
+  'advanced', 'attitude', 'card-launch',
 ]);
 
 /*
@@ -391,7 +394,7 @@ const ROOM_PARENTS = new Set(['courses', 'freestyle', 'launch', 'quad', 'pilot']
 
 /* The rooms whose list is their content, sized to the window by
  * fitMenuHeight. */
-const FIT_SCREENS = new Set(['pilot', 'advanced', 'quad', 'rates', 'pids', 'launch', 'stickhelp', 'standings', 'paused']);
+const FIT_SCREENS = new Set(['pilot', 'advanced', 'attitude', 'quad', 'rates', 'pids', 'launch', 'stickhelp', 'standings', 'paused']);
 
 /*
  * ONE NAME PER ROOM, and it is the name of what the room holds
@@ -419,6 +422,7 @@ const SCREEN_TITLES = {
   credits: 'About',
   stickhelp: 'Stick help',
   advanced: 'Advanced',
+  attitude: 'Attitude indicator',
   calibrate: 'Calibrate sticks',
   padpick: 'Choose joystick',
 };
@@ -445,6 +449,7 @@ const CRUMBS = {
   credits: ['About'],
   stickhelp: ['Settings', 'Stick help'],
   advanced: ['Settings', 'Advanced'],
+  attitude: ['Settings', 'Attitude indicator'],
   calibrate: ['Settings', 'Calibrate sticks'],
   padpick: ['Settings', 'Choose joystick'],
   title: ['WebFPV'],
@@ -1750,6 +1755,26 @@ const DEFAULTS = {
    */
   showFps: false,
   /*
+   * ATTITUDE INDICATOR: a horizon, a pitch ladder, a roll scale, the nose's
+   * waterline and the flight path marker over the FPV picture, drawn on the
+   * camera so the horizon lies on the real one at any tilt (see
+   * src/ui/attitudehud.js). Off by default, like every other mark over the
+   * picture: a real feed carries the OSD and nothing else. H in flight
+   * flips it. The ahi rows below are its room's (Settings, Attitude
+   * indicator); the lists live in attitudehud.js and loadSettings holds
+   * each to its list. Only the picture.
+   */
+  attitudeHud: false,
+  ahiStyle: AHI_STYLES[0],
+  ahiLadder: true,
+  ahiRollScale: true,
+  ahiNose: true,
+  ahiPath: true,
+  ahiStep: AHI_STEPS[0],
+  ahiSize: AHI_SIZES[0],
+  ahiColour: AHI_COLOURS[0],
+  ahiOpacity: AHI_OPACITIES[0],
+  /*
    * STICK OVERLAY: the two gimbals at the bottom of the flight picture, a
    * dot on each following the live sticks. On by default, so a pilot on a
    * radio or a gamepad sees what the quad is being told, which they did not
@@ -2240,6 +2265,11 @@ export function loadSettings() {
     ['ghost', ['off', 'best', 'previous', 'top3']],
     ['freestyleScoring', FREESTYLE_SCORING],
     ['crosshair', CROSSHAIRS],
+    ['ahiStyle', AHI_STYLES],
+    ['ahiStep', AHI_STEPS],
+    ['ahiSize', AHI_SIZES],
+    ['ahiColour', AHI_COLOURS],
+    ['ahiOpacity', AHI_OPACITIES],
     ['inView', IN_VIEW],
     ['graphicsAutoRaised', ['', ...GRAPHICS_IDS]],
     ['graphicsAutoCeiling', ['', ...GRAPHICS_IDS]],
@@ -7428,6 +7458,22 @@ export class Ui {
     this.screens.advanced = advanced;
 
     /*
+     * ATTITUDE INDICATOR, one door down from Settings, built as Advanced
+     * is. The switch and every knob for src/ui/attitudehud.js: which
+     * marks, the style, the ladder's step, size, colour and opacity. A
+     * room rather than nine rows, so Settings grows by one stop.
+     */
+    const attitude = el('div', 'screen screen-page screen-pilot screen-attitude');
+    attitude.append(el('h2', null, 'Attitude indicator'));
+    attitude.append(el('p', 'rates-lede', 'The horizon over the picture, and what is drawn with it.'));
+    const attitudeBlock = wrapMenu();
+    this.attitudeMenu = attitudeBlock.menu;
+    this.attitudeMenu.classList.add('menu-scroll');
+    this.attitudeHelp = attitudeBlock.help;
+    attitude.append(attitudeBlock.stage);
+    this.screens.attitude = attitude;
+
+    /*
      * STANDINGS: the board, in the game.
      *
      * "Open the board" was two problems in one row. It is jargon, so it
@@ -11718,6 +11764,17 @@ export class Ui {
           (id) => CROSSHAIR_LABEL[id],
           (id) => { s.crosshair = id; },
         ),
+        /*
+         * THE DOOR TO THE ATTITUDE INDICATOR'S ROOM, the Rates row's shape:
+         * a door that says what is behind it. Its switch and its eight
+         * knobs are one room down, so Settings gains one stop, not nine.
+         */
+        {
+          label: 'Attitude indicator',
+          value: s.attitudeHud === true ? 'On' : 'Off',
+          action: 'attitude',
+          note: 'A horizon, pitch ladder and roll scale over the picture, the nose and where the quad is going. Which marks, their style, size and colour. H in flight turns it on and off.',
+        },
         toggle(
           'Show FPS',
           s.showFps
@@ -11773,6 +11830,100 @@ export class Ui {
           'A quiet 1000 Hz tone, 6 Hz apart between the ears. Needs headphones to do anything at all.',
           s.focusTone,
           (v) => { s.focusTone = v; },
+        ),
+        { label: 'Back', action: 'back' },
+      ];
+    }
+
+    /* ATTITUDE INDICATOR: the rows Settings sends here. See the room's
+     * comment in build(). Every row draws on the next flight frame. */
+    if (this.screen === 'attitude') {
+      const on = s.attitudeHud === true;
+      return [
+        toggle(
+          'Attitude indicator',
+          on
+            ? 'On: drawn over the picture in flight, with the marks below. H in flight turns it off.'
+            : 'Off: nothing over the picture. H in flight turns it on. The rows below are kept for when it is.',
+          on,
+          (v) => { s.attitudeHud = v; },
+        ),
+        { label: 'Style', section: true },
+        choice(
+          'Horizon',
+          s.ahiStyle === 'craft'
+            ? 'Betaflight: drawn as if the camera looked along the nose, the way a Betaflight OSD draws its artificial horizon. Level flight puts the horizon through the middle of the picture, and on a tilted camera it sits off the real horizon by the tilt.'
+            : `True horizon: drawn where the real horizon is in the picture, at your ${clampCameraAngle(s.cameraAngle)} degree camera tilt or any other. The nose mark shows the tilt instead, below the middle.`,
+          AHI_STYLES,
+          s.ahiStyle,
+          (id) => AHI_STYLE_LABEL[id],
+          (id) => { s.ahiStyle = id; },
+        ),
+        { label: 'Marks', section: true },
+        toggle(
+          'Pitch ladder',
+          s.ahiLadder !== false
+            ? `On: a rung every ${s.ahiStep} degrees above and below the horizon, dashed below it, numbered at both ends.`
+            : 'Off: the horizon line alone.',
+          s.ahiLadder !== false,
+          (v) => { s.ahiLadder = v; },
+        ),
+        choice(
+          'Ladder step',
+          'Degrees between rungs. 10 is the usual; 5 reads small changes in a cruise, 20 keeps the picture clear.',
+          AHI_STEPS,
+          s.ahiStep,
+          (n) => `${n} deg`,
+          (n) => { s.ahiStep = n; },
+        ),
+        toggle(
+          'Roll scale',
+          s.ahiRollScale !== false
+            ? 'On: ticks over the middle of the picture to 60 degrees each way, a pointer that turns with your bank, and your roll and pitch in degrees over it.'
+            : 'Off: no roll scale and no numbers.',
+          s.ahiRollScale !== false,
+          (v) => { s.ahiRollScale = v; },
+        ),
+        toggle(
+          'Nose mark',
+          s.ahiNose !== false
+            ? 'On: a green W where the nose points. On a tilted camera that is below the middle of the picture.'
+            : 'Off: no nose mark.',
+          s.ahiNose !== false,
+          (v) => { s.ahiNose = v; },
+        ),
+        toggle(
+          'Flight path',
+          s.ahiPath !== false
+            ? 'On: a ring with wings where the quad is actually going, above walking pace. Put it on the gap and you go through the gap.'
+            : 'Off: no flight path marker.',
+          s.ahiPath !== false,
+          (v) => { s.ahiPath = v; },
+        ),
+        { label: 'Look', section: true },
+        choice(
+          'Size',
+          'How big the marks and numbers are. They already scale with the window; this is on top.',
+          AHI_SIZES,
+          s.ahiSize,
+          (id) => AHI_SIZE_LABEL[id],
+          (id) => { s.ahiSize = id; },
+        ),
+        choice(
+          'Colour',
+          'The ink the lines and numbers are drawn in, from the OSD\'s own: cream as the numbers, amber as the lap clock, mint as GO. Always over a dark edge. The nose mark stays green.',
+          AHI_COLOURS,
+          s.ahiColour,
+          (id) => AHI_COLOUR_LABEL[id],
+          (id) => { s.ahiColour = id; },
+        ),
+        choice(
+          'Opacity',
+          'How solid the whole indicator is. Lower lets more of the picture through.',
+          AHI_OPACITIES,
+          s.ahiOpacity,
+          (n) => `${n}%`,
+          (n) => { s.ahiOpacity = n; },
         ),
         { label: 'Back', action: 'back' },
       ];
@@ -12847,6 +12998,7 @@ export class Ui {
       freestyle: this.freestyleMenu,
       pilot: this.pilotMenu,
       advanced: this.advancedMenu,
+      attitude: this.attitudeMenu,
       quad: this.quadMenu,
       launch: this.launchMenu,
       standings: this.standingsMenu,
@@ -13267,6 +13419,7 @@ export class Ui {
       freestyle: this.freestyleHelp,
       pilot: this.pilotHelp,
       advanced: this.advancedHelp,
+      attitude: this.attitudeHelp,
       quad: this.quadHelp,
       launch: this.launchHelp,
       standings: this.standingsHelp,
@@ -18398,6 +18551,7 @@ export class Ui {
         ...keyHowtoRows(this.settings.stickMode, this.settings.keyThrottle),
         ['L', 'Launch control, if you turned it on in Quad. Pitch, centre, punch.'],
         ['M', 'Switches Angle and Acro in flight, and keeps the choice.'],
+        ['H', 'Shows or hides the attitude indicator: horizon, pitch ladder and roll scale.'],
         ['R, then Escape', 'Back to the start line, and pause.'],
         ['Turtle', 'If you end up inverted on the ground, a TURTLE MODE prompt appears. Pitch or roll with the arrow keys to flip over. You do not have to time it. Let go, then take off.'],
         ['F8', 'Report a bug or give feedback. Pauses if you are in the air, then opens the form.'],
@@ -23912,7 +24066,7 @@ export class Ui {
      */
     if (action === 'howto' || action === 'pilot' || action === 'quad'
       || action === 'courses' || action === 'freestyle' || action === 'credits'
-      || action === 'tricks' || action === 'stickhelp' || action === 'advanced') {
+      || action === 'tricks' || action === 'stickhelp' || action === 'advanced' || action === 'attitude') {
       /*
        * A room opened FROM another room remembers which, so Back is the way
        * you came rather than a jump to the title. Only from a real room,
