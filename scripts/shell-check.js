@@ -108,6 +108,7 @@ const ROOM_DOORS = [
   ['freestyle', 'quad', 'quad'],
   ['launch', 'pids', 'pids'],
   ['pilot', 'advanced', 'advanced'],
+  ['pilot', 'attitude', 'attitude'],
 ];
 
 const SCREENS = [
@@ -128,6 +129,9 @@ const SCREENS = [
   /* Advanced, from 1 October (MENUS-PLAN.md 2.3): the picture and latency
    * knobs and the flight log, one door down from Settings. */
   'advanced',
+  /* Attitude indicator, from 12 November: its switch and its knobs, one
+   * door down from Settings like Advanced. */
+  'attitude',
 ];
 
 /*

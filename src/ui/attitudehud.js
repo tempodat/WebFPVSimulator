@@ -4,10 +4,12 @@
  * WHAT IT IS. A head up display in the fighter sense rather than a box in
  * a corner: a horizon line, a pitch ladder every 10 degrees, a roll scale
  * with a sky pointer, a waterline mark where the craft's nose points and a
- * flight path marker where the craft is actually going. Settings, HUD,
- * Attitude indicator turns it on and off, and H does the same in flight.
+ * flight path marker where the craft is actually going. Off by default;
+ * Settings, Attitude indicator is its room (each mark on or off, the
+ * style, the ladder's step, size, colour and opacity), and H turns it on
+ * and off in flight.
  *
- * CONFORMAL, which is the one decision worth writing down. The horizon and
+ * CONFORMAL BY DEFAULT, which is the one decision worth writing down. The horizon and
  * the ladder are drawn from the camera's own orientation, the quaternion
  * the frame was rendered with, so the drawn horizon lies on the rendered
  * one at any camera tilt, and will keep doing so when the camera moves on
@@ -18,7 +20,10 @@
  * nose, which on a tilted mount sits below the middle of the frame, and
  * the roll and pitch numbers are the craft's, from the plant quaternion
  * through attitudeAngles in src/ui/fc.js, the same reading the Setup tab's
- * horizon uses.
+ * horizon uses. The other style, Betaflight, draws everything as if the
+ * lens looked along the nose, the way a Betaflight OSD's artificial
+ * horizon does: level flight puts the horizon through the middle of the
+ * frame whatever the tilt, and it sits off the rendered horizon by it.
  *
  * THE PROJECTION is the camera's: a world direction goes into the camera
  * frame through the inverse of its quaternion and through the pinhole of
@@ -50,14 +55,43 @@
  */
 
 const DEG = Math.PI / 180;
-/* The OSD's own inks (index.html, --cream and --osd-ink): cream lines on a
- * dark edge, so the marks read over a bright sky and over grass alike. */
+/* The OSD's own ink (index.html, --osd-ink): every mark is drawn over a
+ * dark edge, so it reads over a bright sky and over grass alike. */
 const INK = 'rgba(11, 17, 22, 0.8)';
-const CREAM = '#f3ead4';
 const MINT = '#8dffb0';
-/* The ladder's rungs, degrees of elevation. The horizon itself is drawn
- * apart, as a full line. */
-const RUNGS = [-80, -70, -60, -50, -40, -30, -20, -10, 10, 20, 30, 40, 50, 60, 70, 80];
+
+/*
+ * THE ROOM'S CHOICES, here so the settings screen and the drawing share
+ * one list. This file imports nothing, so ui.js can take these without
+ * three.js. Each list's first entry is the default.
+ */
+export const AHI_STYLES = ['camera', 'craft'];
+export const AHI_STYLE_LABEL = { camera: 'True horizon', craft: 'Betaflight' };
+export const AHI_STEPS = [10, 5, 15, 20];
+export const AHI_SIZES = ['medium', 'small', 'large'];
+export const AHI_SIZE_LABEL = { small: 'Small', medium: 'Medium', large: 'Large' };
+const AHI_SIZE_SCALE = { small: 0.8, medium: 1, large: 1.3 };
+/* The OSD's own inks: cream as the numbers are, amber as the lap clock,
+ * mint as GO, sakura as the perf readout's line, and plain white. */
+export const AHI_COLOURS = ['cream', 'amber', 'mint', 'sakura', 'white'];
+export const AHI_COLOUR_LABEL = { cream: 'Cream', amber: 'Amber', mint: 'Mint', sakura: 'Sakura', white: 'White' };
+const AHI_COLOUR_HEX = { cream: '#f3ead4', amber: '#ffd45c', mint: '#8dffb0', sakura: '#e8a8b8', white: '#ffffff' };
+export const AHI_OPACITIES = [100, 75, 50];
+
+/* The ladder's rungs for a step, degrees of elevation, built once per step
+ * the pilot picks. The horizon itself is drawn apart, as a full line. */
+const rungCache = new Map();
+function rungsFor(step) {
+  let r = rungCache.get(step);
+  if (!r) {
+    r = [];
+    for (let e = step; e <= 85; e += step) {
+      r.push(-e, e);
+    }
+    rungCache.set(step, r);
+  }
+  return r;
+}
 /* The roll scale's ticks, degrees, and which of them are long. */
 const ROLL_TICKS = [-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60];
 const ROLL_LONG = new Set([-60, -30, 0, 30, 60]);
@@ -80,6 +114,11 @@ const FPM_MIN_SPEED = 2;
  *   vx, vy, vz  the craft's velocity, three.js world frame, m/s.
  *   roll, pitch the craft's attitude, radians: roll right positive, nose up
  *               positive (attitudeAngles).
+ * And the pilot's choices, copied from the settings each frame:
+ *   style       'camera' (true horizon) or 'craft' (Betaflight).
+ *   ladder, rollScale, nose, path   each mark on or off.
+ *   step        degrees between rungs.
+ *   size, colour, opacity           as the lists above.
  */
 export function hudFrame() {
   return {
@@ -88,6 +127,9 @@ export function hudFrame() {
     tanV: 1, aspect: 1, tilt: 0,
     vx: 0, vy: 0, vz: 0,
     roll: 0, pitch: 0,
+    style: 'camera',
+    ladder: true, rollScale: true, nose: true, path: true,
+    step: 10, size: 'medium', colour: 'cream', opacity: 100,
   };
 }
 
@@ -115,14 +157,21 @@ export function createAttitudeHud(parent, bend) {
   const cam = { r: [0, 0, 0], u: [0, 0, 0], f: [0, 0, 0] };
   const loc = [0, 0, 0];
   let F = null;
+  /* The quaternion the marks are projected through: the camera's, or in
+   * the Betaflight style the camera's with the tilt taken back out, which
+   * is the lens looking along the nose. And the tilt the waterline is
+   * drawn at, zero in that style. And this frame's ink. */
+  const Q = { x: 0, y: 0, z: 0, w: 1 };
+  let tiltNow = 0;
+  let CREAM = AHI_COLOUR_HEX.cream;
 
   /* Rotate (x, y, z) by the camera quaternion's conjugate: world into the
    * camera frame (x right, y up, looking down -z). */
   function toCamera(x, y, z) {
-    const qx = -F.qx;
-    const qy = -F.qy;
-    const qz = -F.qz;
-    const qw = F.qw;
+    const qx = -Q.x;
+    const qy = -Q.y;
+    const qz = -Q.z;
+    const qw = Q.w;
     const tx = 2 * (qy * z - qz * y);
     const ty = 2 * (qz * x - qx * z);
     const tz = 2 * (qx * y - qy * x);
@@ -133,10 +182,10 @@ export function createAttitudeHud(parent, bend) {
 
   /* Rotate (x, y, z) by the camera quaternion: camera frame into world. */
   function toWorld(x, y, z, out) {
-    const qx = F.qx;
-    const qy = F.qy;
-    const qz = F.qz;
-    const qw = F.qw;
+    const qx = Q.x;
+    const qy = Q.y;
+    const qz = Q.z;
+    const qw = Q.w;
     const tx = 2 * (qy * z - qz * y);
     const ty = 2 * (qz * x - qx * z);
     const tz = 2 * (qx * y - qy * x);
@@ -196,7 +245,7 @@ export function createAttitudeHud(parent, bend) {
     canvas.height = Math.max(1, Math.round(cssH * dpr));
   }
 
-  function drawHorizonAndLadder(s) {
+  function drawHorizonAndLadder(s, ladder) {
     const w = F.w;
     const h = F.h;
     const f = cam.f;
@@ -231,6 +280,9 @@ export function createAttitudeHud(parent, bend) {
       }
     }
     strokeTwice(s);
+    if (!ladder) {
+      return;
+    }
 
     /* The sky's direction on screen, at the centre: world up seen through
      * the lens, (up.r, up.u) in camera coordinates, y flipped for the
@@ -253,7 +305,7 @@ export function createAttitudeHud(parent, bend) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
-    for (const e of RUNGS) {
+    for (const e of rungsFor(F.step)) {
       const ce = Math.cos(e * DEG);
       const se = Math.sin(e * DEG);
       if (!projectWorld(ce * hx, se, ce * hz)) {
@@ -294,7 +346,7 @@ export function createAttitudeHud(parent, bend) {
    * below the lens axis by the tilt, straight down the picture in camera
    * terms whatever the craft is doing. */
   function drawWaterline(s) {
-    if (!projectLocal(0, -Math.sin(F.tilt), -Math.cos(F.tilt))) {
+    if (!projectLocal(0, -Math.sin(tiltNow), -Math.cos(tiltNow))) {
       return;
     }
     const x = pt.x;
@@ -405,18 +457,43 @@ export function createAttitudeHud(parent, bend) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
       drawn = true;
+      if (F.style === 'craft' && F.tilt !== 0) {
+        /* Q = camera * (rotation about its x by -tilt). */
+        const sh = Math.sin(-F.tilt / 2);
+        const ch = Math.cos(-F.tilt / 2);
+        Q.x = F.qw * sh + F.qx * ch;
+        Q.y = F.qy * ch + F.qz * sh;
+        Q.z = F.qz * ch - F.qy * sh;
+        Q.w = F.qw * ch - F.qx * sh;
+        tiltNow = 0;
+      } else {
+        Q.x = F.qx;
+        Q.y = F.qy;
+        Q.z = F.qz;
+        Q.w = F.qw;
+        tiltNow = F.tilt;
+      }
+      CREAM = AHI_COLOUR_HEX[F.colour] || AHI_COLOUR_HEX.cream;
+      ctx.globalAlpha = (AHI_OPACITIES.includes(F.opacity) ? F.opacity : 100) / 100;
       /* The camera's axes in the world: right, up and forward. */
       toWorld(1, 0, 0, cam.r);
       toWorld(0, 1, 0, cam.u);
       toWorld(0, 0, -1, cam.f);
       /* One size for every mark, from the shorter side, so a phone and a
        * monitor read the same and nothing outgrows the frame. */
-      const s = Math.max(0.6, Math.min(2, Math.min(F.w, F.h) / 720));
+      const s = Math.max(0.6, Math.min(2, Math.min(F.w, F.h) / 720))
+        * (AHI_SIZE_SCALE[F.size] || 1);
       ctx.lineCap = 'round';
-      drawHorizonAndLadder(s);
-      drawRollScale(s);
-      drawWaterline(s);
-      drawFlightPath(s);
+      drawHorizonAndLadder(s, F.ladder !== false);
+      if (F.rollScale !== false) {
+        drawRollScale(s);
+      }
+      if (F.nose !== false) {
+        drawWaterline(s);
+      }
+      if (F.path !== false) {
+        drawFlightPath(s);
+      }
     },
     /* Put it away: hidden, and cleared so a later show never flashes the
      * last flight's horizon. One test when already away. */

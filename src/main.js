@@ -8407,7 +8407,7 @@ export async function boot({ loading, bootStart, mapId }) {
      */
     /* 'advanced' holds Render scale and the frame cap, both settings
      * changes that can land here (MENUS-PLAN.md 2.3). */
-    const STAY_SCREENS = ['pilot', 'advanced', 'quad', 'launch', 'rates', 'paused', 'title', 'credits'];
+    const STAY_SCREENS = ['pilot', 'advanced', 'attitude', 'quad', 'launch', 'rates', 'paused', 'title', 'credits'];
     const stayScreen = STAY_SCREENS.includes(ui.screen) ? ui.screen : null;
     const stayMode = keepPlace ? mode : 'title';
     swapInFlight = true;
@@ -11293,11 +11293,15 @@ export async function boot({ loading, bootStart, mapId }) {
      * mirrors: see drawAttitudeHud. The next flight frame draws or clears
      * it, so there is nothing else to do here. */
     if (code === 'KeyH' && ui.screen === 'flight' && mode === 'flight') {
-      ui.settings.attitudeHud = ui.settings.attitudeHud === false;
+      ui.settings.attitudeHud = ui.settings.attitudeHud !== true;
       ui.persistSettings();
+      /* Worded and timed as M's Angle and Acro notice is (flipFlightMode):
+       * the state in capitals, one line on what it means, the key back. */
       notice = {
-        text: ui.settings.attitudeHud ? 'Attitude indicator on' : 'Attitude indicator off',
-        untilMs: performance.now() + 1200,
+        text: ui.settings.attitudeHud
+          ? 'ATTITUDE INDICATOR ON\nHorizon, pitch ladder and roll scale over the picture.\nH hides it.'
+          : 'ATTITUDE INDICATOR OFF\nSettings, Attitude indicator, sets it up.\nH brings it back.',
+        untilMs: performance.now() + 2600,
       };
       return;
     }
@@ -11750,11 +11754,12 @@ export async function boot({ loading, bootStart, mapId }) {
    * view and all. Only on the pilot's own live lens: not a chase camera,
    * a replay, a harness camera or the held impact frame (the film is the
    * title's, and this runs in flight only), and
-   * never while a crash flip or turtle has the picture. Settings, HUD,
-   * Attitude indicator, or H in flight, turns it off.
+   * never while a crash flip or turtle has the picture. Off by default:
+   * Settings, Attitude indicator, or H in flight, turns it on, and that
+   * room's rows are copied into the frame here.
    */
   function drawAttitudeHud() {
-    if (ui.settings.attitudeHud === false || !fpvLens || !predictCam || replayMode || camOverride
+    if (ui.settings.attitudeHud !== true || !fpvLens || !predictCam || replayMode || camOverride
       || crashflipOn || turtleRecover || !stateCurr) {
       ahi.clear();
       return;
@@ -11777,6 +11782,16 @@ export async function boot({ loading, bootStart, mapId }) {
     f.vy = ahiVel.y;
     f.vz = ahiVel.z;
     attitudeAngles(stateCurr[7], stateCurr[8], stateCurr[9], stateCurr[10], f);
+    const s = ui.settings;
+    f.style = s.ahiStyle;
+    f.ladder = s.ahiLadder !== false;
+    f.rollScale = s.ahiRollScale !== false;
+    f.nose = s.ahiNose !== false;
+    f.path = s.ahiPath !== false;
+    f.step = s.ahiStep;
+    f.size = s.ahiSize;
+    f.colour = s.ahiColour;
+    f.opacity = s.ahiOpacity;
     ahi.draw(f);
   }
 
