@@ -12054,6 +12054,7 @@ export async function boot({ loading, bootStart, mapId }) {
     f.size = s.ahiSize;
     f.colour = s.ahiColour;
     f.opacity = s.ahiOpacity;
+    f.mount = s.ahiMount;
     ahi.draw(f);
   }
 

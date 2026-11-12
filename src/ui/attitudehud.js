@@ -34,6 +34,23 @@
  * polyline of projected points; the ladder's rungs are straight segments
  * through exactly projected centres, which is close enough for a mark.
  *
+ * WITH HEAD TRACKING (src/head/) the lens turns on the frame, and the
+ * pilot picks how the indicator rides it, Settings, Attitude indicator,
+ * With head tracking:
+ *   Cockpit (the default): the indicator is a panel fixed to the quad, as
+ *     a fighter's HUD glass is fixed to the airframe. It is drawn as it
+ *     would be with the head centred, then every point is carried through
+ *     the gimbal onto the picture, so looking left slides the whole panel
+ *     right and out of view, roll scale and numbers with it, and looking
+ *     back brings it home. The horizon, ladder and flight path marker stay
+ *     on the world as before, inside the panel.
+ *   Visor: the indicator rides the head, as a helmet sight does. The roll
+ *     scale and numbers stay in the middle of the screen, the horizon and
+ *     ladder stay on the world wherever the head looks, and the nose mark
+ *     shows where the nose is.
+ * In both, the nose mark waits on the nearest edge, with an arrow toward
+ * the nose, once the nose has left the picture.
+ *
  * Only the picture: nothing here is read back by the flight, and the frame
  * object main.js hands in is its own, written in place every frame, so the
  * draw allocates nothing (P8).
@@ -77,6 +94,9 @@ export const AHI_COLOURS = ['cream', 'amber', 'mint', 'sakura', 'white'];
 export const AHI_COLOUR_LABEL = { cream: 'Cream', amber: 'Amber', mint: 'Mint', sakura: 'Sakura', white: 'White' };
 const AHI_COLOUR_HEX = { cream: '#f3ead4', amber: '#ffd45c', mint: '#8dffb0', sakura: '#e8a8b8', white: '#ffffff' };
 export const AHI_OPACITIES = [100, 75, 50];
+/* How the indicator rides a head tracked camera: see WITH HEAD TRACKING. */
+export const AHI_MOUNTS = ['quad', 'head'];
+export const AHI_MOUNT_LABEL = { quad: 'Cockpit', head: 'Visor' };
 
 /* The ladder's rungs for a step, degrees of elevation, built once per step
  * the pilot picks. The horizon itself is drawn apart, as a full line. */
@@ -118,6 +138,7 @@ const FPM_MIN_SPEED = 2;
  *               camera's mount (where the lens sits with the head centred)
  *               into the camera: main.js's qHeadInv. Identity when head
  *               tracking is off, so nothing changes then.
+ *   mount       'quad' (Cockpit) or 'head' (Visor): AHI_MOUNTS.
  * And the pilot's choices, copied from the settings each frame:
  *   style       'camera' (true horizon) or 'craft' (Betaflight).
  *   ladder, rollScale, nose, path   each mark on or off.
@@ -132,6 +153,7 @@ export function hudFrame() {
     vx: 0, vy: 0, vz: 0,
     roll: 0, pitch: 0,
     hx: 0, hy: 0, hz: 0, hw: 1,
+    mount: 'quad',
     style: 'camera',
     ladder: true, rollScale: true, nose: true, path: true,
     step: 10, size: 'medium', colour: 'cream', opacity: 100,
@@ -172,6 +194,16 @@ export function createAttitudeHud(parent, bend) {
   /* Where the nose points, in the frame Q looks from: below the lens axis
    * by the tilt, and swung by the gimbal when the head is turned. */
   const nose = [0, 0, -1];
+  /* Cockpit with the head turned: the marks are laid out as for the
+   * mount's lens (pinhole, unbent) and each point is then carried through
+   * the gimbal, Hq, onto the picture by place(). Off, every point is
+   * already the picture's. sp is place()'s answer, and pen whether the
+   * path being drawn has a point to go on from. */
+  let mapped = false;
+  const Hq = { x: 0, y: 0, z: 0, w: 1 };
+  const sp = { x: 0, y: 0 };
+  const loc2 = [0, 0, 0];
+  let pen = false;
   let CREAM = AHI_COLOUR_HEX.cream;
 
   /* Rotate (x, y, z) by the camera quaternion's conjugate: world into the
@@ -215,19 +247,85 @@ export function createAttitudeHud(parent, bend) {
 
   /* A camera frame direction to CSS pixels in pt. False when it is behind
    * the lens, where a projection reflects through the centre and lies. */
-  function projectLocal(x, y, z) {
+  function projectCam(x, y, z, bendIt) {
     if (z > -1e-4) {
       return false;
     }
     ndc.x = x / (-z * F.tanV * F.aspect);
     ndc.y = y / (-z * F.tanV);
     ndc.z = 0;
-    if (bend) {
+    if (bend && bendIt) {
       bend(ndc);
     }
     pt.x = (ndc.x + 1) * 0.5 * F.w;
     pt.y = (1 - ndc.y) * 0.5 * F.h;
     return true;
+  }
+
+  /* Into the frame the marks are laid out in: the picture's, or the
+   * mount's unbent one when place() carries them on. */
+  function projectLocal(x, y, z) {
+    return projectCam(x, y, z, !mapped);
+  }
+
+  /* A layout point (x, y) onto the picture, in sp. Cockpit with the head
+   * turned: the point is a direction from the mount's lens, turned through
+   * the gimbal and projected through the real one, bend and all. False
+   * when that lands behind the lens. */
+  function place(x, y) {
+    if (!mapped) {
+      sp.x = x;
+      sp.y = y;
+      return true;
+    }
+    const nx = (x / F.w) * 2 - 1;
+    const ny = 1 - (y / F.h) * 2;
+    rotate(Hq.x, Hq.y, Hq.z, Hq.w, nx * F.tanV * F.aspect, ny * F.tanV, -1, loc2);
+    if (!projectCam(loc2[0], loc2[1], loc2[2], true)) {
+      return false;
+    }
+    sp.x = pt.x;
+    sp.y = pt.y;
+    return true;
+  }
+
+  /* moveTo and lineTo through place(), a path broken where a point is
+   * behind the lens; an arc as short chords so it bends with the rest;
+   * and a label at a placed point. */
+  function mv(x, y) {
+    pen = place(x, y);
+    if (pen) {
+      ctx.moveTo(sp.x, sp.y);
+    }
+  }
+  function ln(x, y) {
+    if (!place(x, y)) {
+      pen = false;
+      return;
+    }
+    if (pen) {
+      ctx.lineTo(sp.x, sp.y);
+    } else {
+      ctx.moveTo(sp.x, sp.y);
+    }
+    pen = true;
+  }
+  function arcPoly(cx, cy, r, a0, a1, n) {
+    for (let i = 0; i <= n; i += 1) {
+      const a = a0 + ((a1 - a0) * i) / n;
+      const x = cx + Math.cos(a) * r;
+      const y = cy + Math.sin(a) * r;
+      if (i === 0) {
+        mv(x, y);
+      } else {
+        ln(x, y);
+      }
+    }
+  }
+  function txt(text, x, y) {
+    if (place(x, y)) {
+      label(text, sp.x, sp.y);
+    }
   }
 
   function projectWorld(x, y, z) {
@@ -283,19 +381,19 @@ export function createAttitudeHud(parent, bend) {
     /* The horizon, as a polyline of projected points, broken wherever a
      * point is behind the lens. */
     ctx.beginPath();
-    let pen = false;
+    let on = false;
     for (let a = -SWEEP_DEG; a <= SWEEP_DEG; a += SWEEP_STEP) {
       const ca = Math.cos(a * DEG);
       const sa = Math.sin(a * DEG);
       if (projectWorld(ca * hx + sa * rx, 0, ca * hz + sa * rz)) {
-        if (pen) {
-          ctx.lineTo(pt.x, pt.y);
+        if (on) {
+          ln(pt.x, pt.y);
         } else {
-          ctx.moveTo(pt.x, pt.y);
-          pen = true;
+          mv(pt.x, pt.y);
         }
+        on = true;
       } else {
-        pen = false;
+        on = false;
       }
     }
     strokeTwice(s);
@@ -342,12 +440,12 @@ export function createAttitudeHud(parent, bend) {
       const ky = nys * toward * tick;
       ctx.beginPath();
       ctx.setLineDash(e < 0 ? [7 * s, 5 * s] : []);
-      ctx.moveTo(cx - tx * half + kx, cy - ty * half + ky);
-      ctx.lineTo(cx - tx * half, cy - ty * half);
-      ctx.lineTo(cx - tx * gap, cy - ty * gap);
-      ctx.moveTo(cx + tx * gap, cy + ty * gap);
-      ctx.lineTo(cx + tx * half, cy + ty * half);
-      ctx.lineTo(cx + tx * half + kx, cy + ty * half + ky);
+      mv(cx - tx * half + kx, cy - ty * half + ky);
+      ln(cx - tx * half, cy - ty * half);
+      ln(cx - tx * gap, cy - ty * gap);
+      mv(cx + tx * gap, cy + ty * gap);
+      ln(cx + tx * half, cy + ty * half);
+      ln(cx + tx * half + kx, cy + ty * half + ky);
       strokeTwice(s * 0.85);
       ctx.setLineDash([]);
       const lx = tx * (half + 16 * s);
@@ -356,8 +454,8 @@ export function createAttitudeHud(parent, bend) {
       ctx.lineWidth = 3 * s;
       ctx.strokeStyle = INK;
       ctx.fillStyle = CREAM;
-      label(text, cx - lx, cy - ly);
-      label(text, cx + lx, cy + ly);
+      txt(text, cx - lx, cy - ly);
+      txt(text, cx + lx, cy + ly);
     }
   }
 
@@ -390,7 +488,7 @@ export function createAttitudeHud(parent, bend) {
     const m = 6 * a;
     let dx = 0;
     let dy = 0;
-    if (projectLocal(nose[0], nose[1], nose[2])) {
+    if (projectCam(nose[0], nose[1], nose[2], true)) {
       if (pt.x >= m && pt.x <= F.w - m && pt.y >= m && pt.y <= F.h - m) {
         waterlineAt(pt.x, pt.y, a, 4, s);
         return;
@@ -452,14 +550,13 @@ export function createAttitudeHud(parent, bend) {
     }
     const r = 7 * s;
     ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.moveTo(x - r, y);
-    ctx.lineTo(x - r * 2.4, y);
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + r * 2.4, y);
-    ctx.moveTo(x, y - r);
-    ctx.lineTo(x, y - r * 1.9);
+    arcPoly(x, y, r, 0, Math.PI * 2, 16);
+    mv(x - r, y);
+    ln(x - r * 2.4, y);
+    mv(x + r, y);
+    ln(x + r * 2.4, y);
+    mv(x, y - r);
+    ln(x, y - r * 1.9);
     strokeTwice(s);
   }
 
@@ -471,14 +568,14 @@ export function createAttitudeHud(parent, bend) {
     const cy = F.h / 2;
     const R = Math.min(F.w, F.h) * 0.36;
     ctx.beginPath();
-    ctx.arc(cx, cy, R, (-90 - 60) * DEG, (-90 + 60) * DEG);
+    arcPoly(cx, cy, R, (-90 - 60) * DEG, (-90 + 60) * DEG, 24);
     for (const t of ROLL_TICKS) {
       const a = (t - 90) * DEG;
       const len = (ROLL_LONG.has(t) ? 12 : 7) * s;
       const c = Math.cos(a);
       const sn = Math.sin(a);
-      ctx.moveTo(cx + c * R, cy + sn * R);
-      ctx.lineTo(cx + c * (R + len), cy + sn * (R + len));
+      mv(cx + c * R, cy + sn * R);
+      ln(cx + c * (R + len), cy + sn * (R + len));
     }
     strokeTwice(s * 0.85);
     const rollDeg = F.roll / DEG;
@@ -494,10 +591,10 @@ export function createAttitudeHud(parent, bend) {
     const by = c;
     const d = 11 * s;
     ctx.beginPath();
-    ctx.moveTo(px, py);
-    ctx.lineTo(px - c * d + bx * d * 0.6, py - sn * d + by * d * 0.6);
-    ctx.lineTo(px - c * d - bx * d * 0.6, py - sn * d - by * d * 0.6);
-    ctx.closePath();
+    mv(px, py);
+    ln(px - c * d + bx * d * 0.6, py - sn * d + by * d * 0.6);
+    ln(px - c * d - bx * d * 0.6, py - sn * d - by * d * 0.6);
+    ln(px, py);
     ctx.lineJoin = 'miter';
     strokeTwice(s, Math.abs(rollDeg) > 60 ? MINT : CREAM);
     /* The craft's numbers, over the top of the scale. */
@@ -509,7 +606,7 @@ export function createAttitudeHud(parent, bend) {
     ctx.fillStyle = CREAM;
     const r = Math.round(rollDeg);
     const p = Math.round(F.pitch / DEG);
-    label(`R ${r}  P ${p}`, cx, cy - R - 16 * s);
+    txt(`R ${r}  P ${p}`, cx, cy - R - 16 * s);
   }
 
   return {
@@ -536,29 +633,53 @@ export function createAttitudeHud(parent, bend) {
       M.y = F.qw * hy - F.qx * hz + F.qy * hw + F.qz * hx;
       M.z = F.qw * hz + F.qx * hy - F.qy * hx + F.qz * hw;
       M.w = F.qw * hw - F.qx * hx - F.qy * hy - F.qz * hz;
-      if (F.style === 'craft') {
+      /* Cockpit lays the marks out on the mount's lens and carries them
+       * through the gimbal; with the head centred there is nothing to
+       * carry, and the marks go straight onto the picture as always. */
+      const cockpit = F.mount !== 'head';
+      mapped = cockpit && !(hx === 0 && hy === 0 && hz === 0);
+      Hq.x = hx;
+      Hq.y = hy;
+      Hq.z = hz;
+      Hq.w = hw;
+      const craft = F.style === 'craft';
+      if (craft) {
         /* Q = mount * (rotation about its x by -tilt): the lens looking
-         * along the nose, whatever the tilt and wherever the head is, as a
-         * Betaflight OSD draws it from the craft alone. The nose is then
-         * the middle of the picture. */
+         * along the nose, whatever the tilt, as a Betaflight OSD draws it
+         * from the craft alone; the head never changes what is drawn,
+         * only, in Cockpit, where. The nose is the middle of the layout. */
         const sh = Math.sin(-F.tilt / 2);
         const ch = Math.cos(-F.tilt / 2);
         Q.x = M.w * sh + M.x * ch;
         Q.y = M.y * ch + M.z * sh;
         Q.z = M.z * ch - M.y * sh;
         Q.w = M.w * ch - M.x * sh;
-        nose[0] = 0;
-        nose[1] = 0;
-        nose[2] = -1;
+      } else if (cockpit) {
+        /* True horizon on the mount's lens, carried on by place(): the
+         * horizon and ladder still land on the picture's own. */
+        Q.x = M.x;
+        Q.y = M.y;
+        Q.z = M.z;
+        Q.w = M.w;
       } else {
-        /* True horizon: through the camera itself, so the horizon and
-         * ladder lie on the picture's. The nose, below the mount's axis by
-         * the tilt, comes into the camera through the gimbal. */
+        /* True horizon through the camera itself. */
         Q.x = F.qx;
         Q.y = F.qy;
         Q.z = F.qz;
         Q.w = F.qw;
-        rotate(hx, hy, hz, hw, 0, -Math.sin(F.tilt), -Math.cos(F.tilt), nose);
+      }
+      /* The nose in the real camera's frame, for its mark: from the mount
+       * (below its axis by the tilt, or its axis in Betaflight's layout)
+       * through the gimbal, except Visor's Betaflight, which keeps it in
+       * the middle of the screen with the rest of its layout. */
+      const nyM = craft ? 0 : -Math.sin(F.tilt);
+      const nzM = craft ? -1 : -Math.cos(F.tilt);
+      if (craft && !cockpit) {
+        nose[0] = 0;
+        nose[1] = nyM;
+        nose[2] = nzM;
+      } else {
+        rotate(hx, hy, hz, hw, 0, nyM, nzM, nose);
       }
       CREAM = AHI_COLOUR_HEX[F.colour] || AHI_COLOUR_HEX.cream;
       ctx.globalAlpha = (AHI_OPACITIES.includes(F.opacity) ? F.opacity : 100) / 100;

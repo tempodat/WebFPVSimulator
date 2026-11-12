@@ -263,6 +263,7 @@ import {
 import { wishlistAllowed } from '../steam/edition.js';
 import {
   AHI_STYLES, AHI_STYLE_LABEL, AHI_STEPS, AHI_SIZES, AHI_SIZE_LABEL, AHI_COLOURS, AHI_COLOUR_LABEL, AHI_OPACITIES,
+  AHI_MOUNTS, AHI_MOUNT_LABEL,
 } from './attitudehud.js';
 import {
   GIMBAL_DEFAULTS, HEAD_DEADZONES, HEAD_EXPOS, HEAD_PANS, HEAD_SENS, HEAD_SMOOTHING, HEAD_SPEEDS, HEAD_STYLES,
@@ -1780,6 +1781,9 @@ const DEFAULTS = {
   ahiSize: AHI_SIZES[0],
   ahiColour: AHI_COLOURS[0],
   ahiOpacity: AHI_OPACITIES[0],
+  /* How it rides a head tracked camera: Cockpit (fixed to the quad) or
+   * Visor (follows the head). See WITH HEAD TRACKING in attitudehud.js. */
+  ahiMount: AHI_MOUNTS[0],
   /*
    * HEAD TRACKING (src/head/): the webcam turns the FPV camera the way a
    * head tracker turns a pan and tilt gimbal on a real quad. Off at the
@@ -2294,6 +2298,7 @@ export function loadSettings() {
     ['ahiSize', AHI_SIZES],
     ['ahiColour', AHI_COLOURS],
     ['ahiOpacity', AHI_OPACITIES],
+    ['ahiMount', AHI_MOUNTS],
     ['headStyle', HEAD_STYLES],
     ['headSensYaw', HEAD_SENS],
     ['headSensPitch', HEAD_SENS],
@@ -11932,6 +11937,16 @@ export class Ui {
           s.ahiStyle,
           (id) => AHI_STYLE_LABEL[id],
           (id) => { s.ahiStyle = id; },
+        ),
+        choice(
+          'With head tracking',
+          s.ahiMount === 'head'
+            ? 'Visor: the indicator rides your head, like a helmet sight. The roll scale and numbers stay in the middle of the screen wherever you look, and the horizon stays on the real one.'
+            : 'Cockpit: the indicator is fixed to the quad, like the HUD glass in a fighter. Look left and it slides right, off the screen; look back and it is where it always is. The horizon still lies on the real one inside it.',
+          AHI_MOUNTS,
+          s.ahiMount,
+          (id) => AHI_MOUNT_LABEL[id],
+          (id) => { s.ahiMount = id; },
         ),
         { label: 'Marks', section: true },
         toggle(
