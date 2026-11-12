@@ -7535,6 +7535,9 @@ export class Ui {
     this.headCal = false;
     this.headStatusText = '';
     this.headEngaged = true;
+    /* The browser refused the camera the last time it was asked; main.js
+     * turned tracking off and this says why. */
+    this.headDenied = false;
 
     /*
      * STANDINGS: the board, in the game.
@@ -18632,6 +18635,7 @@ export class Ui {
         ['M', 'Switches Angle and Acro in flight, and keeps the choice.'],
         ['H', 'Shows or hides the attitude indicator: horizon, pitch ladder and roll scale.'],
         ['C', 'With head tracking on, makes where your head points now straight ahead.'],
+        ['J', 'Hands the camera to your head or back to the nose. With head tracking off, turns it on and the browser asks for your camera.'],
         ['R, then Escape', 'Back to the start line, and pause.'],
         ['Turtle', 'If you end up inverted on the ground, a TURTLE MODE prompt appears. Pitch or roll with the arrow keys to flip over. You do not have to time it. Let go, then take off.'],
         ['F8', 'Report a bug or give feedback. Pauses if you are in the air, then opens the form.'],
@@ -21891,7 +21895,9 @@ export class Ui {
   headStatusWords() {
     const t = this.headTracker;
     if (!t || this.settings.headTrack !== true) {
-      return 'Off. Turn it on and the browser asks to use your camera. The picture stays on this machine: nothing is sent anywhere.';
+      return this.headDenied
+        ? 'Off: the browser refused the camera. Allow it for this site (the camera icon by the address), then turn this on again.'
+        : 'Off. Turn it on, or press J in flight, and the browser asks to use your camera. The picture stays on this machine: nothing is sent anywhere.';
     }
     switch (t.status) {
       case 'loading':
@@ -22128,7 +22134,7 @@ export class Ui {
           ? 'Flip the switch to the position that should mean on, or press the button you want. Choose this row again to stop.'
           : (pad.headEngage
             ? `In flight, it hands the camera to your head or back to the nose${this.headEngaged === false ? ' (off now)' : ''}. Flipping it on while head tracking is off turns head tracking on. Choose this row to pick another.`
-            : 'A switch or button on your radio that turns head tracking on and off in flight: off puts the camera back on the nose at once, on hands it to your head again. A switch is on in the position you flip it to here; a button toggles.'),
+            : 'A switch or button on your radio that turns head tracking on and off in flight, as J does: off puts the camera back on the nose at once, on hands it to your head again, and turns head tracking on if it is off. A switch is on in the position you flip it to here; a button toggles.'),
       }] : []),
       ...(pad && pad.headEngage && !pad.headEngageCapturing ? [{
         label: 'Forget engage switch',

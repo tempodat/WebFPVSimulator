@@ -9266,10 +9266,62 @@ export async function boot({ loading, bootStart, mapId }) {
     if (st === 'off') {
       ui.headCal = false;
     }
+    /* The browser said no to the camera: head tracking goes off rather
+     * than sitting on, waiting for a picture that will not come. Turning
+     * it on again asks again. After the status callback has returned, so
+     * the tracker is not stopped from inside its own report. */
+    if (st === 'denied' && ui.settings.headTrack === true) {
+      Promise.resolve().then(() => {
+        if (ui.settings.headTrack !== true) {
+          return;
+        }
+        ui.settings.headTrack = false;
+        ui.headDenied = true;
+        ui.writeSettings();
+        notice = {
+          text: 'CAMERA REFUSED\nHead tracking is off.\nAllow the camera for this site, then turn it on again.',
+          untilMs: performance.now() + 4000,
+        };
+      });
+    } else if (st === 'tracking') {
+      ui.headDenied = false;
+    }
     if (ui.screen === 'headtrack') {
       ui.renderMenu();
     }
   });
+
+  /*
+   * The engage switch and J both come here. Engaged hands the camera to the
+   * head; disengaged puts it back on the nose with the webcam left open. If
+   * the whole of head tracking is off, engaging turns it on, which is when
+   * the browser asks for the camera: the pilot asked with their own hand.
+   * `by` names the control in the notice, 'J' or 'The switch'.
+   */
+  function setHeadEngaged(want, by) {
+    const wasOn = ui.settings.headTrack === true;
+    const wasLive = headEngaged && wasOn;
+    headEngaged = want;
+    ui.headEngaged = want;
+    if (want && !wasOn) {
+      ui.settings.headTrack = true;
+      ui.writeSettings();
+      notice = {
+        text: `HEAD TRACKING ON\nAllow the camera if the browser asks.\n${by} hands the camera back to the nose.`,
+        untilMs: performance.now() + 3200,
+      };
+    } else if (wasOn && want !== wasLive) {
+      notice = {
+        text: want
+          ? `HEAD TRACKING ENGAGED\nYour head turns the camera.\n${by} hands it back to the nose.`
+          : `HEAD TRACKING DISENGAGED\nThe camera is back on the nose.\n${by} hands it to your head again.`,
+        untilMs: performance.now() + 2600,
+      };
+    }
+    if (ui.screen === 'headtrack') {
+      ui.renderMenu();
+    }
+  }
 
   function applyHeadTracking(s) {
     const on = s.headTrack === true;
@@ -11495,6 +11547,13 @@ export async function boot({ loading, bootStart, mapId }) {
       headRecenter();
       return;
     }
+    /* Head tracking engaged or not: the keyboard's engage switch, the same
+     * as the radio's (setHeadEngaged). With head tracking off it turns it
+     * on and the browser asks for the camera. */
+    if (code === 'KeyJ' && ui.screen === 'flight' && mode === 'flight') {
+      setHeadEngaged(ui.settings.headTrack === true ? !headEngaged : true, 'J');
+      return;
+    }
     /* Angle or Acro, from the keyboard. See flipFlightMode. */
     if (code === 'KeyM' && ui.screen === 'flight' && mode === 'flight') {
       flipFlightMode();
@@ -12479,26 +12538,7 @@ export async function boot({ loading, bootStart, mapId }) {
     {
       const flipped = input.takeHeadEngageSwitch();
       if (flipped !== null) {
-        const want = flipped === 'toggle' ? !headEngaged : Boolean(flipped);
-        const wasLive = headEngaged && ui.settings.headTrack === true;
-        headEngaged = want;
-        ui.headEngaged = want;
-        if (want && ui.settings.headTrack !== true) {
-          ui.settings.headTrack = true;
-          ui.writeSettings();
-        }
-        const live = headEngaged && ui.settings.headTrack === true;
-        if (live !== wasLive && ui.settings.headTrack === true) {
-          notice = {
-            text: live
-              ? 'HEAD TRACKING ENGAGED\nYour head turns the camera.\nThe switch hands it back to the nose.'
-              : 'HEAD TRACKING DISENGAGED\nThe camera is back on the nose.\nThe switch hands it to your head again.',
-            untilMs: performance.now() + 2600,
-          };
-        }
-        if (ui.screen === 'headtrack') {
-          ui.renderMenu();
-        }
+        setHeadEngaged(flipped === 'toggle' ? !headEngaged : Boolean(flipped), 'The switch');
       }
     }
     if (input.engageCapture && ui.screen !== 'headtrack') {
