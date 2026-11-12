@@ -1782,9 +1782,11 @@ const DEFAULTS = {
   ahiOpacity: AHI_OPACITIES[0],
   /*
    * HEAD TRACKING (src/head/): the webcam turns the FPV camera the way a
-   * head tracker turns a pan and tilt gimbal on a real quad. Off by
-   * default, because it asks for the camera, and only ever on the pilot's
-   * own say. headCamera is a device id from the browser, '' for its
+   * head tracker turns a pan and tilt gimbal on a real quad. Off at the
+   * start of every visit, whatever was saved (loadSettings forces it), so
+   * the camera is only ever asked for after the pilot turns it on in this
+   * visit, by the row or the radio's engage switch. Every other head knob
+   * is kept between visits. headCamera is a device id from the browser, '' for its
    * choice. The head* knobs below are its room's (Settings, Head
    * tracking); their lists live in src/head/gimbal.js and loadSettings
    * holds each to its list. Only the picture: the flight never sees any
@@ -2207,6 +2209,9 @@ export function loadSettings() {
       s[k] = stored[k];
     }
   }
+  /* Head tracking starts every visit off, so the browser never asks for
+   * the camera until the pilot turns it on again. Its knobs are kept. */
+  s.headTrack = false;
   if (s.flightMode !== 'angle') {
     s.flightMode = 'acro';
   }
@@ -21967,7 +21972,7 @@ export class Ui {
         'Head tracking',
         on
           ? 'On: your head turns the camera in flight. C, or a switch set below, makes where you look straight ahead.'
-          : 'Off: the camera is fixed to the quad as usual. Turning it on asks for your camera; the picture never leaves this machine.',
+          : 'Off: the camera is fixed to the quad as usual. Turning it on asks for your camera; the picture never leaves this machine. It starts off on every visit; the settings below are kept.',
         on,
         (v) => { s.headTrack = v; },
       ),
