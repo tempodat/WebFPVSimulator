@@ -1132,26 +1132,17 @@ export function paintPageStrip(nav, session, onPick) {
 }
 
 /*
- * A Configurator-shaped horizon from the plant quaternion. Body-to-world,
- * z up. Not Betaflight's Three.js widget and not their assets.
+ * Roll and pitch from the plant quaternion (w x y z, body-to-world, z up),
+ * factored out of drawAttitude below on 2026-11-12 so the flight HUD
+ * (src/ui/attitudehud.js) reads the craft exactly as the Setup tab's
+ * horizon does: radians out, roll right positive, nose up positive.
+ * Scalars in and an object written in place, so the frame loop can call it
+ * without allocating.
  */
-export function drawAttitude(canvas, q) {
-  if (!canvas) {
-    return;
-  }
-  const w = canvas.width;
-  const h = canvas.height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx || w < 8 || h < 8) {
-    return;
-  }
-  const qw = q.w;
-  const qx = q.x;
-  const qy = q.y;
-  const qz = q.z;
+export function attitudeAngles(qw, qx, qy, qz, out) {
   const sinr = 2 * (qw * qx + qy * qz);
   const cosr = 1 - 2 * (qx * qx + qy * qy);
-  const roll = Math.atan2(sinr, cosr);
+  out.roll = Math.atan2(sinr, cosr);
   /*
    * The sign is the whole point here. This instrument is drawn the way an
    * aviation horizon is drawn, which assumes the aerospace NED frame: x
@@ -1163,7 +1154,27 @@ export function drawAttitude(canvas, q) {
    * allowed lives in src/render/frame.js. Roll reads the same both ways.
    */
   const sinp = 2 * (qz * qx - qw * qy);
-  const pitch = Math.abs(sinp) >= 1 ? Math.sign(sinp) * (Math.PI / 2) : Math.asin(sinp);
+  out.pitch = Math.abs(sinp) >= 1 ? Math.sign(sinp) * (Math.PI / 2) : Math.asin(sinp);
+  return out;
+}
+
+/*
+ * A Configurator-shaped horizon from the plant quaternion. Body-to-world,
+ * z up. Not Betaflight's Three.js widget and not their assets.
+ */
+const attScratch = { roll: 0, pitch: 0 };
+
+export function drawAttitude(canvas, q) {
+  if (!canvas) {
+    return;
+  }
+  const w = canvas.width;
+  const h = canvas.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx || w < 8 || h < 8) {
+    return;
+  }
+  const { roll, pitch } = attitudeAngles(q.w, q.x, q.y, q.z, attScratch);
   ctx.fillStyle = '#3a81c5';
   ctx.fillRect(0, 0, w, h);
   ctx.save();

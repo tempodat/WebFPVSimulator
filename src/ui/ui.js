@@ -1750,6 +1750,15 @@ const DEFAULTS = {
    */
   showFps: false,
   /*
+   * ATTITUDE INDICATOR: a horizon, a pitch ladder, a roll scale, the nose's
+   * waterline and the flight path marker over the FPV picture, drawn on the
+   * camera so the horizon lies on the real one at any tilt (see
+   * src/ui/attitudehud.js). On by default: this fork was asked for it.
+   * Only the picture. A boolean so the typeof gate accepts it; H in flight
+   * flips it too.
+   */
+  attitudeHud: true,
+  /*
    * STICK OVERLAY: the two gimbals at the bottom of the flight picture, a
    * dot on each following the live sticks. On by default, so a pilot on a
    * radio or a gamepad sees what the quad is being told, which they did not
@@ -11719,6 +11728,14 @@ export class Ui {
           (id) => { s.crosshair = id; },
         ),
         toggle(
+          'Attitude indicator',
+          s.attitudeHud !== false
+            ? 'On: a horizon line and a pitch ladder every 10 degrees, drawn where the real horizon is in the picture whatever your camera tilt, a roll scale with your bank and pitch in degrees over it, a green W where the nose points, which on a tilted camera is below the middle, and a ring with wings where the quad is actually going. H in flight turns it off.'
+            : 'Off: no horizon or ladder over the picture. H in flight turns it back on.',
+          s.attitudeHud !== false,
+          (v) => { s.attitudeHud = v; },
+        ),
+        toggle(
           'Show FPS',
           s.showFps
             ? 'On: a readout in the top left while you fly, under the music dock, updated twice a second. GPU is an estimate from how long the graphics card takes to finish each frame, everything else it is doing included, so a stream encoder on the same card shows here; MEM is what this page has uploaded to it, geometry and textures, not the card\'s total. CPU is the share of time this page\'s frame work takes on its own thread, not the whole machine\'s, and RAM is this page\'s own memory where the browser reports it. FPS is the frames this page drew in the last half second, with the slowest one in a hundred and the display\'s refresh rate beside it. Frametime is the time between drawn frames, as a line over the last few seconds with a faint rule at the display\'s own frame. None of it reads the physics, which runs at its own fixed rate.'
@@ -18398,6 +18415,7 @@ export class Ui {
         ...keyHowtoRows(this.settings.stickMode, this.settings.keyThrottle),
         ['L', 'Launch control, if you turned it on in Quad. Pitch, centre, punch.'],
         ['M', 'Switches Angle and Acro in flight, and keeps the choice.'],
+        ['H', 'Shows or hides the attitude indicator: horizon, pitch ladder and roll scale.'],
         ['R, then Escape', 'Back to the start line, and pause.'],
         ['Turtle', 'If you end up inverted on the ground, a TURTLE MODE prompt appears. Pitch or roll with the arrow keys to flip over. You do not have to time it. Let go, then take off.'],
         ['F8', 'Report a bug or give feedback. Pauses if you are in the air, then opens the form.'],

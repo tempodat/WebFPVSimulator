@@ -146,6 +146,8 @@ import { cliMap, composeConfig, moduleDump, moduleGet, RATES_KEEP, ratesFromDump
 import { GATE_SCALE, MICRO_SCALE } from './game/track.js';
 import { YardRace, inAskZone } from './game/yardrace.js';
 import { setLifeScale } from './ui/scorehud.js';
+import { createAttitudeHud, hudFrame } from './ui/attitudehud.js';
+import { attitudeAngles } from './ui/fc.js';
 import { planStages, moduleCounter, yieldToPaint } from './ui/loading.js';
 import { loadSim, simErrorName, SIM_OK, SIM_ERR_BAD_ARG } from '../tests/lib/simmod.js';
 
@@ -847,6 +849,15 @@ export async function boot({ loading, bootStart, mapId }) {
     canvas.style.cursor = 'none';
   }
   const ui = new Ui(uiRoot);
+  /*
+   * The attitude indicator over the FPV picture: src/ui/attitudehud.js.
+   * Inside the OSD so it is up exactly when the OSD is, and handed the
+   * fisheye's bend so its horizon lands where the bent picture puts it.
+   * Its frame is written in place every frame (P8); see drawAttitudeHud.
+   */
+  const ahi = createAttitudeHud(ui.osd, fisheyeNdc);
+  const ahiFrame = hudFrame();
+  const ahiVel = new THREE.Vector3();
   /* For the dogfight's Arm up page, which listens for a button or switch. */
   ui.input = input;
   /*
@@ -11278,6 +11289,18 @@ export async function boot({ loading, bootStart, mapId }) {
       setDownNearby('x');
       return;
     }
+    /* The attitude indicator on or off, kept like the Settings row it
+     * mirrors: see drawAttitudeHud. The next flight frame draws or clears
+     * it, so there is nothing else to do here. */
+    if (code === 'KeyH' && ui.screen === 'flight' && mode === 'flight') {
+      ui.settings.attitudeHud = ui.settings.attitudeHud === false;
+      ui.persistSettings();
+      notice = {
+        text: ui.settings.attitudeHud ? 'Attitude indicator on' : 'Attitude indicator off',
+        untilMs: performance.now() + 1200,
+      };
+      return;
+    }
     /* Angle or Acro, from the keyboard. See flipFlightMode. */
     if (code === 'KeyM' && ui.screen === 'flight' && mode === 'flight') {
       flipFlightMode();
@@ -11719,6 +11742,42 @@ export async function boot({ loading, bootStart, mapId }) {
    */
   function stickOverlayUp() {
     return ui.settings.stickOverlay !== false && !input.isTouchPrimary();
+  }
+
+  /*
+   * The attitude indicator, once a flight frame, after the draw, so the
+   * camera it reads is the one the picture was rendered with, predicted
+   * view and all. Only on the pilot's own live lens: not a chase camera,
+   * a replay, a harness camera or the held impact frame (the film is the
+   * title's, and this runs in flight only), and
+   * never while a crash flip or turtle has the picture. Settings, HUD,
+   * Attitude indicator, or H in flight, turns it off.
+   */
+  function drawAttitudeHud() {
+    if (ui.settings.attitudeHud === false || !fpvLens || !predictCam || replayMode || camOverride
+      || crashflipOn || turtleRecover || !stateCurr) {
+      ahi.clear();
+      return;
+    }
+    const f = ahiFrame;
+    const q = shell.camera.quaternion;
+    f.w = shell.cssSize.w;
+    f.h = shell.cssSize.h;
+    f.qx = q.x;
+    f.qy = q.y;
+    f.qz = q.z;
+    f.qw = q.w;
+    f.tanV = Math.tan((shell.camera.fov * Math.PI) / 360);
+    f.aspect = shell.camera.aspect;
+    f.tilt = cameraTiltRad(camTilt);
+    /* Velocity through frame.js and the spawn's turn, as the pose is. */
+    simPosToThree(stateCurr[4], stateCurr[5], stateCurr[6], ahiVel);
+    ahiVel.applyQuaternion(qSpawn);
+    f.vx = ahiVel.x;
+    f.vy = ahiVel.y;
+    f.vz = ahiVel.z;
+    attitudeAngles(stateCurr[7], stateCurr[8], stateCurr[9], stateCurr[10], f);
+    ahi.draw(f);
   }
 
   /*
@@ -14323,7 +14382,9 @@ export async function boot({ loading, bootStart, mapId }) {
       /* The chips fade on the same test: see syncChipFade. */
       ui.syncChipFade(aloft, nowWall);
       updateTargetLock();
+      drawAttitudeHud();
     } else if (mode !== 'paused') {
+      ahi.clear();
       ui.setStickOverlay({ show: false, roll: 0, pitch: 0, yaw: 0, throttle: 0 });
       ui.setAirSlider(false);
       ui.syncChipFade(false, nowWall);
